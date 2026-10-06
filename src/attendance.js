@@ -108,6 +108,7 @@ export function computeDay({ date, punches, periods, excuse = null, grace = 0, m
     firstIn: intervals.length ? intervals[0][0] : null,
     lastOut: state === 'out' && intervals.length ? intervals[intervals.length - 1][1] : null,
     exits: exits.map(([s, e, note]) => ({ start: s, end: e, minutes: mins(e - s), note: note || '' })),
+    intervals: intervals.map(([s, e]) => [s, e]),
     liveState,
     flags: [...flags],
     excuse,

@@ -1,4 +1,5 @@
 // Wareef staff app: one file, no build step. Hash routes, server-rendered data via JSON API.
+import { startInk } from './ink.js';
 
 // ------------------------------------------------------------------ helpers
 const $ = (s, el = document) => el.querySelector(s);
@@ -333,37 +334,59 @@ PAGES.dashboard = async () => {
   const flagged = d.punches.filter((p) => p.flags.length && !p.voided && !(p.flags.length === 1 && p.flags[0] === 'manager_entry')).length;
   const ops = d.ops;
   const isToday = date === today();
+  const hour = +localIso(nowMs()).slice(11, 13);
+  const greet = !isToday ? `يوم <b>${esc(dayName(date))}</b>` : hour < 12 ? 'صباح <b>الخير</b>' : 'مساء <b>الخير</b>';
+  const monthName = new Date(`${date}T12:00:00Z`).toLocaleDateString('ar-SA-u-ca-gregory-nu-latn', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' });
+
   const pg = render(`
-    <div class="topline"><div><h1>لوحة ${isToday ? 'اليوم' : 'يوم'}</h1><p class="muted">${fmtDate(date)}</p></div>
-      <div class="tools"><input type="date" id="dd" value="${date}" max="${today()}" aria-label="التاريخ">
-      <a class="btn ghost" href="/report/daily?date=${date}" target="_blank" rel="noopener">${icon('file')}التقرير اليومي</a>
-      <a class="btn" href="/api/export/daily?date=${date}">${icon('down')}تصدير Excel</a></div></div>
-    <div class="kpis">
-      ${isToday ? `<div class="kpi good"><b>${inside}</b><span>داخل الدوام الآن</span></div><div class="kpi ${onLeave ? 'warn' : ''}"><b>${onLeave}</b><span>في خروج مؤقت</span></div>` : `<div class="kpi good"><b>${c('present', 'late', 'partial')}</b><span>حضروا</span></div>`}
-      <div class="kpi ${c('late') ? 'warn' : ''}"><b>${c('late')}</b><span>متأخرون</span></div>
-      <div class="kpi ${c('absent', 'partial', 'not_arrived') ? 'bad' : ''}"><b>${c('absent', 'partial', 'not_arrived')}</b><span>${isToday ? 'غائبون أو لم يصلوا' : 'غياب كلي أو جزئي'}</span></div>
-      <div class="kpi ${flagged ? 'bad' : ''}"><b>${flagged}</b><span>بصمات مشبوهة</span></div>
-      <div class="kpi"><b>${int(ops?.totalOrders)}</b><span>طلبات اليوم</span></div>
-      <div class="kpi"><b>${int(ops?.shipments)}</b><span>شحنات</span></div>
-      <div class="kpi"><b>${int(ops?.returns)}</b><span>مرتجعات</span></div>
-      <div class="kpi ${d.openTickets ? 'warn' : ''}"><b>${d.openTickets}</b><span>تذاكر مفتوحة</span></div>
+    <section class="hero">
+      <div class="intro">
+        <p class="eyebrow">وريف · لوحة ${isToday ? 'اليوم' : 'يوم سابق'} · ${esc(dayName(date))} ${esc(monthName)}</p>
+        <h1 class="silver">${greet}</h1>
+        ${isToday ? '<p class="now" id="clock">--:--:--</p>' : ''}
+        <div class="bigstats">
+          ${isToday
+            ? `<div class="good"><b data-count="${inside}">${inside}</b><span>داخل الدوام الآن</span></div><div class="${onLeave ? 'warn' : ''}"><b data-count="${onLeave}">${onLeave}</b><span>في خروج مؤقت</span></div>`
+            : `<div class="good"><b data-count="${c('present', 'late', 'partial')}">0</b><span>حضروا</span></div>`}
+          <div class="${c('late') ? 'warn' : ''}"><b data-count="${c('late')}">0</b><span>متأخرون</span></div>
+          <div class="${c('absent', 'partial', 'not_arrived') ? 'bad' : ''}"><b data-count="${c('absent', 'partial', 'not_arrived')}">0</b><span>${isToday ? 'غائبون أو لم يصلوا' : 'غياب كلي أو جزئي'}</span></div>
+        </div>
+        <div class="tools">
+          <input type="date" id="dd" value="${date}" max="${today()}" aria-label="التاريخ">
+          <a class="btn ghost" href="/report/daily?date=${date}" target="_blank" rel="noopener">${icon('file')}التقرير اليومي</a>
+          <a class="btn" href="/api/export/daily?date=${date}">${icon('down')}تصدير Excel</a>
+        </div>
+      </div>
+      ${dial(att, date, isToday)}
+    </section>
+
+    <div class="band">
+      <div><b data-count="${ops?.totalOrders || 0}">0</b><span>طلبات اليوم</span></div>
+      <div><b data-count="${ops?.totalAmount || 0}">0</b><span>مبيعات اليوم (ر.س)</span></div>
+      <div><b data-count="${ops?.shipments || 0}">0</b><span>شحنات</span></div>
+      <div><b data-count="${ops?.returns || 0}">0</b><span>مرتجعات</span></div>
+      <div class="${flagged ? 'bad' : ''}"><b data-count="${flagged}">0</b><span>بصمات مشبوهة</span></div>
+      <div class="${d.openTickets ? 'warn' : ''}"><b data-count="${d.openTickets}">0</b><span>تذاكر مفتوحة</span></div>
     </div>
-    <section class="panel"><header><h2>الموظفون</h2><span class="muted small">اضغط على الموظف لعرض بصماته وتعديلها</span></header>
+
+    <section class="panel"><header><h2>الفريق</h2><span class="muted small">الشريط يمثّل اليوم من 6 صباحاً إلى 10 مساءً. اضغط على أي موظف لعرض بصماته وتعديلها</span></header>
       <div class="staff">${att.map((r) => {
         const live = LIVE[r.liveState] || LIVE.out;
         return `<button class="sc" type="button" data-u="${r.userId}" data-n="${esc(r.name)}">
+          <span class="glyph" aria-hidden="true">${esc(r.name.slice(0, 1))}</span>
           <div class="top"><div class="who"><span class="avatar">${esc(r.name.slice(0, 1))}</span><b>${esc(r.name)}</b></div>${statusPill(r.status)}</div>
           ${isToday ? `<div>${pill(live[0], live[1])}</div>` : ''}
+          ${strip(r, date, isToday)}
           <dl><dt>أول حضور</dt><dd>${fmtT(r.firstIn)}</dd><dt>آخر انصراف</dt><dd>${fmtT(r.lastOut)}</dd>
           <dt>تأخير</dt><dd>${mn(r.lateMinutes)}</dd><dt>خروج</dt><dd>${mn(r.exitMinutes)}</dd><dt>ساعات العمل</dt><dd>${hm(r.presentMinutes)}</dd></dl>
           ${r.flags.length ? `<div>${flagList(r.flags)}</div>` : ''}
         </button>`;
       }).join('') || '<p class="muted">لا يوجد موظفون نشطون.</p>'}</div>
     </section>
+
     <div class="grid2">
       <section class="panel"><header><h2>الطلبات حسب القناة</h2><a class="link" href="#/ops">تسجيل أو تعديل</a></header>
-        ${ops ? table(['القناة', 'الطلبات', 'المبلغ (ر.س)'], d.channels.map((ch) => `<tr><td>${esc(ch.name)}</td><td>${int(ops.channels[ch.key]?.count)}</td><td>${money(ops.channels[ch.key]?.amount)}</td></tr>`),
-          { foot: ['الإجمالي', int(ops.totalOrders), money(ops.totalAmount)] }) : '<p class="muted">لم تُسجَّل عمليات هذا اليوم بعد.</p>'}
+        ${ops ? channelRibbon(d.channels, ops) : '<p class="muted">لم تُسجَّل عمليات هذا اليوم بعد. سجّلها من صفحة العمليات اليومية.</p>'}
       </section>
       <section class="panel"><header><h2>ملاحظات وإنجازات اليوم</h2><a class="link" href="#/tickets">كل التذاكر</a></header>
         <div class="list">${d.tickets.map((t) => `<button class="item" type="button" data-t="${t.id}"><div class="top"><b>${esc(t.title)}</b>${pill(...TS[t.status])}</div><span class="muted small">${esc(t.user_name)} · ${TK[t.kind]} · ${fmtT(t.created_at)}</span></button>`).join('') || '<p class="muted">لا توجد تذاكر اليوم.</p>'}</div>
@@ -373,9 +396,150 @@ PAGES.dashboard = async () => {
       ${table(['النوع', 'التاجر / المورد', 'الوصف', 'الكمية', 'القيمة'], d.stock.map((s) => `<tr><td>${pill(STOCK[s.kind], s.kind === 'new_goods' ? 'good' : 'warn')}</td><td>${esc(s.party)}</td><td class="wrap">${esc(s.description)}</td><td>${int(s.quantity)}</td><td>${money(s.value)}</td></tr>`), { empty: 'لا يوجد شيء مسجّل اليوم' })}
     </section>`);
   $('#dd', pg).onchange = (e) => { sessionStorage.setItem('dash-date', e.target.value || today()); refresh(); };
-  $$('[data-u]', pg).forEach((b) => { b.onclick = () => dayDetail(+b.dataset.u, b.dataset.n, date); });
+  $$('[data-u]', pg).forEach((b) => { b.addEventListener('click', () => dayDetail(+b.dataset.u, b.dataset.n, date)); });
   $$('[data-t]', pg).forEach((b) => { b.onclick = () => ticketModal(+b.dataset.t); });
+  countUp(pg);
+  if (isToday) {
+    const tick = () => { const el = $('#clock'); if (el) el.textContent = localIso(nowMs()).slice(11, 19); };
+    tick();
+    window.__tick = setInterval(tick, 1000);
+  }
 };
+
+// The working day, 06:00 → 22:00, mapped onto a 300° arc that opens at the bottom.
+const DAY_FROM = 6 * 60;
+const DAY_TO = 22 * 60;
+const minuteOf = (ts) => ((ts + tz * 60000) % 86400000) / 60000;
+const hhmmMin = (s) => +s.slice(0, 2) * 60 + +s.slice(3, 5);
+const clampDay = (m) => Math.min(DAY_TO, Math.max(DAY_FROM, m));
+
+function dial(att, date, isToday) {
+  const C = 230;
+  const A0 = -150;
+  const A1 = 150;
+  const ang = (m) => A0 + ((clampDay(m) - DAY_FROM) / (DAY_TO - DAY_FROM)) * (A1 - A0);
+  const pt = (r, a) => [C + r * Math.sin((a * Math.PI) / 180), C - r * Math.cos((a * Math.PI) / 180)];
+  const arc = (r, m1, m2) => {
+    const a = ang(m1);
+    const b = ang(m2);
+    if (b - a < 0.4) return '';
+    const [x1, y1] = pt(r, a);
+    const [x2, y2] = pt(r, b);
+    return `M${x1.toFixed(1)} ${y1.toFixed(1)} A${r} ${r} 0 ${b - a > 180 ? 1 : 0} 1 ${x2.toFixed(1)} ${y2.toFixed(1)}`;
+  };
+  const n = att.length || 1;
+  const inner = 84;
+  const outer = 192;
+  const step = n > 1 ? (outer - inner) / (n - 1) : 0;
+  const sw = Math.max(5, Math.min(12, step * 0.5));
+  const now = minuteOf(nowMs());
+  let idx = 0;
+  const seg = (cls, r, m1, m2, w) => {
+    const p = arc(r, m1, m2);
+    return p ? `<path class="seg ${cls}" d="${p}" pathLength="1" stroke-width="${w}" style="--i:${idx++}"/>` : '';
+  };
+
+  const rings = att.map((row, i) => {
+    const r = inner + i * step;
+    const tracks = row.periods.map((p) => {
+      const d = arc(r, hhmmMin(p.start), hhmmMin(p.end));
+      return d ? `<path class="track" d="${d}" pathLength="1" stroke-width="${sw}" style="--i:${i}"/>` : '';
+    }).join('');
+    const late = row.periods.filter((p) => p.late > 0).map((p) => {
+      const end = p.firstIn ? minuteOf(p.firstIn) : now;
+      return seg('l', r, hhmmMin(p.start), end, Math.max(2, sw * 0.35));
+    }).join('');
+    const pres = (row.intervals || []).map(([a, b]) => seg('p', r, minuteOf(a), minuteOf(b), sw)).join('');
+    const exits = (row.exits || []).map((x) => seg('x', r, minuteOf(x.start), minuteOf(x.end), Math.max(2, sw * 0.35))).join('');
+    const [lx, ly] = pt(r, A0 - 4);
+    const tip = `${row.name}: ${(STATUS[row.status] || [row.status])[0]} · حضور ${fmtT(row.firstIn)} · تأخير ${row.lateMinutes} د · عمل ${hm(row.presentMinutes)}`;
+    return `<g class="ring" data-u="${row.userId}" data-n="${esc(row.name)}"><title>${esc(tip)}</title>
+      <path d="${arc(r, DAY_FROM, DAY_TO)}" stroke="transparent" stroke-width="${step || 20}" fill="none"/>
+      ${tracks}${late}${pres}${exits}<text class="name" x="${lx.toFixed(1)}" y="${(ly + 4).toFixed(1)}" text-anchor="end">${esc(row.name)}</text></g>`;
+  }).join('');
+
+  let ticks = '';
+  for (let h = 6; h <= 22; h++) {
+    const a = ang(h * 60);
+    const major = h % 3 === 0;
+    const [x1, y1] = pt(outer + 14, a);
+    const [x2, y2] = pt(outer + (major ? 24 : 19), a);
+    ticks += `<line class="tick ${major ? 'major' : ''}" x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}"/>`;
+    if (major) {
+      const [tx, ty] = pt(outer + 38, a);
+      ticks += `<text class="hl" x="${tx.toFixed(1)}" y="${(ty + 4).toFixed(1)}" text-anchor="middle">${h > 12 ? h - 12 : h}${h < 12 ? 'ص' : 'م'}</text>`;
+    }
+  }
+  let hand = '';
+  if (isToday && now >= DAY_FROM && now <= DAY_TO) {
+    const [hx, hy] = pt(outer + 12, ang(now));
+    const [bx, by] = pt(inner - 22, ang(now));
+    hand = `<line class="hand" x1="${bx.toFixed(1)}" y1="${by.toFixed(1)}" x2="${hx.toFixed(1)}" y2="${hy.toFixed(1)}"/><circle class="handdot" cx="${hx.toFixed(1)}" cy="${hy.toFixed(1)}" r="4"/>`;
+  }
+  const present = isToday ? att.filter((r) => r.liveState === 'in').length : att.filter((r) => r.presentMinutes > 0).length;
+  return `<figure class="dial" style="margin:0" aria-label="دوام الفريق على مدار اليوم">
+    <svg viewBox="-20 -20 500 500" role="img">
+      <defs>
+        <linearGradient id="silverStroke" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset=".45" stop-color="#d4cfc9"/><stop offset="1" stop-color="#8f8a85"/></linearGradient>
+        <filter id="glow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="2.2" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+        <radialGradient id="core"><stop offset="0" stop-color="rgb(255 255 255 / 10%)"/><stop offset="1" stop-color="rgb(255 255 255 / 0%)"/></radialGradient>
+      </defs>
+      <circle cx="${C}" cy="${C}" r="${inner - 14}" fill="url(#core)"/>
+      ${ticks}${rings}${hand}
+      <g class="center"><text class="n" x="${C}" y="${C + 14}">${present}<tspan font-size="24" fill="#8d8781">/${att.length}</tspan></text>
+      <text class="t" x="${C}" y="${C + 38}">${isToday ? 'داخل الدوام' : 'حضروا'}</text></g>
+    </svg>
+    <figcaption class="legend"><span><i style="background:linear-gradient(90deg,#fff,#8f8a85)"></i>حضور</span><span><i style="background:var(--warn)"></i>تأخير</span><span><i style="background:repeating-linear-gradient(90deg,var(--bad) 0 3px,transparent 3px 6px)"></i>خروج مؤقت</span><span><i style="background:rgb(255 255 255 / 12%)"></i>وقت الدوام</span></figcaption>
+  </figure>`;
+}
+
+/** The same day as a horizontal strip, for each staff card. */
+function strip(row, date, isToday) {
+  const pos = (m) => ((clampDay(m) - DAY_FROM) / (DAY_TO - DAY_FROM)) * 100;
+  const bar = (cls, m1, m2) => {
+    const a = pos(m1);
+    const w = pos(m2) - a;
+    return w > 0.2 ? `<i class="${cls}" style="inset-inline-start:${a.toFixed(2)}%;width:${w.toFixed(2)}%"></i>` : '';
+  };
+  const now = minuteOf(nowMs());
+  return `<div><div class="strip">
+      ${row.periods.map((p) => bar('sch', hhmmMin(p.start), hhmmMin(p.end))).join('')}
+      ${row.periods.filter((p) => p.late > 0).map((p) => bar('lt', hhmmMin(p.start), p.firstIn ? minuteOf(p.firstIn) : now)).join('')}
+      ${(row.intervals || []).map(([a, b]) => bar('pr', minuteOf(a), minuteOf(b))).join('')}
+      ${(row.exits || []).map((x) => bar('ex', minuteOf(x.start), minuteOf(x.end))).join('')}
+      ${isToday && now > DAY_FROM && now < DAY_TO ? `<i class="nw" style="inset-inline-start:${pos(now).toFixed(2)}%"></i>` : ''}
+    </div><div class="strip-axis"><span>6ص</span><span>12م</span><span>6م</span><span>10م</span></div></div>`;
+}
+
+function channelRibbon(channels, ops) {
+  const total = channels.reduce((t, ch) => t + (ops.channels[ch.key]?.count || 0), 0);
+  const shade = (i) => `hsl(30 5% ${Math.max(34, 94 - i * 13)}%)`;
+  return `<div class="ribbon">
+    <div class="total"><b class="silver">${int(total)}</b><span class="muted">طلب · ${money(ops.totalAmount)} ر.س</span></div>
+    <div class="flow" role="img" aria-label="توزيع الطلبات على القنوات">${channels.map((ch, i) => {
+      const n = ops.channels[ch.key]?.count || 0;
+      return n ? `<span style="flex:${n};background:${shade(i)};--i:${i}" title="${esc(ch.name)}: ${n}"></span>` : '';
+    }).join('')}</div>
+    <div class="keys">${channels.map((ch, i) => {
+      const n = ops.channels[ch.key]?.count || 0;
+      return `<div style="--c:${shade(i)}"><b>${int(n)}</b><span>${esc(ch.name)} · ${total ? Math.round((n / total) * 100) : 0}% · ${money(ops.channels[ch.key]?.amount)} ر.س</span></div>`;
+    }).join('')}</div>
+  </div>`;
+}
+
+/** Numbers roll up to their value once, on first paint. */
+function countUp(root) {
+  const els = $$('[data-count]', root);
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) { els.forEach((el) => { el.textContent = int(el.dataset.count); }); return; }
+  const t0 = performance.now();
+  const step = (t) => {
+    const k = Math.min(1, (t - t0) / 1100);
+    const e = 1 - (1 - k) ** 3;
+    els.forEach((el) => { el.textContent = int(Math.round(+el.dataset.count * e)); });
+    if (k < 1) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+}
 
 /** Punches for one employee on one day, with manual add and void. */
 async function dayDetail(userId, name, date) {
@@ -871,4 +1035,5 @@ PAGES.settings = async () => {
   };
 };
 
+startInk();
 boot();
