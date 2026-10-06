@@ -341,6 +341,7 @@ PAGES.dashboard = async () => {
   const pg = render(`
     <section class="hero">
       <div class="intro">
+        <p class="hud">${isToday ? '<span><span class="pulse"></span><b>مباشر</b></span>' : ''}<span>الفريق <b>${att.length}</b></span><span>البصمات <b>${d.punches.filter((p) => !p.voided).length}</b></span><span>آخر تحديث <b>${fmtT(d.now)}</b></span></p>
         <p class="eyebrow">وريف · لوحة ${isToday ? 'اليوم' : 'يوم سابق'} · ${esc(dayName(date))} ${esc(monthName)}</p>
         <h1 class="silver">${greet}</h1>
         ${isToday ? '<p class="now" id="clock">--:--:--</p>' : ''}
@@ -480,16 +481,18 @@ function dial(att, date, isToday) {
   return `<figure class="dial" style="margin:0" aria-label="دوام الفريق على مدار اليوم">
     <svg viewBox="-20 -20 500 500" role="img">
       <defs>
-        <linearGradient id="silverStroke" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset=".45" stop-color="#d4cfc9"/><stop offset="1" stop-color="#8f8a85"/></linearGradient>
+        <linearGradient id="foilStroke" gradientUnits="userSpaceOnUse" x1="20" y1="420" x2="440" y2="60"><stop offset="0" stop-color="#6ff0d6"/><stop offset=".3" stop-color="#8fb8ff"/><stop offset=".55" stop-color="#b28dff"/><stop offset=".8" stop-color="#ff8fc7"/><stop offset="1" stop-color="#ffc98a"/></linearGradient>
+        <linearGradient id="foilText" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset=".5" stop-color="#cbb8ff"/><stop offset="1" stop-color="#7ef0dc"/></linearGradient>
         <filter id="glow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="2.2" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
-        <radialGradient id="core"><stop offset="0" stop-color="rgb(255 255 255 / 10%)"/><stop offset="1" stop-color="rgb(255 255 255 / 0%)"/></radialGradient>
+        <radialGradient id="core"><stop offset="0" stop-color="rgb(178 141 255 / 26%)"/><stop offset=".6" stop-color="rgb(111 240 214 / 6%)"/><stop offset="1" stop-color="rgb(111 240 214 / 0%)"/></radialGradient>
       </defs>
       <circle cx="${C}" cy="${C}" r="${inner - 14}" fill="url(#core)"/>
+      <circle class="orbit" cx="${C}" cy="${C}" r="${outer + 52}"/><circle class="orbit b" cx="${C}" cy="${C}" r="${inner - 26}"/>
       ${ticks}${rings}${hand}
       <g class="center"><text class="n" x="${C}" y="${C + 14}">${present}<tspan font-size="24" fill="#8d8781">/${att.length}</tspan></text>
       <text class="t" x="${C}" y="${C + 38}">${isToday ? 'داخل الدوام' : 'حضروا'}</text></g>
     </svg>
-    <figcaption class="legend"><span><i style="background:linear-gradient(90deg,#fff,#8f8a85)"></i>حضور</span><span><i style="background:var(--warn)"></i>تأخير</span><span><i style="background:repeating-linear-gradient(90deg,var(--bad) 0 3px,transparent 3px 6px)"></i>خروج مؤقت</span><span><i style="background:rgb(255 255 255 / 12%)"></i>وقت الدوام</span></figcaption>
+    <figcaption class="legend"><span><i style="background:var(--foil)"></i>حضور</span><span><i style="background:var(--warn)"></i>تأخير</span><span><i style="background:repeating-linear-gradient(90deg,var(--bad) 0 3px,transparent 3px 6px)"></i>خروج مؤقت</span><span><i style="background:rgb(255 255 255 / 12%)"></i>وقت الدوام</span></figcaption>
   </figure>`;
 }
 
@@ -513,12 +516,12 @@ function strip(row, date, isToday) {
 
 function channelRibbon(channels, ops) {
   const total = channels.reduce((t, ch) => t + (ops.channels[ch.key]?.count || 0), 0);
-  const shade = (i) => `hsl(30 5% ${Math.max(34, 94 - i * 13)}%)`;
+  const shade = (i) => ['var(--teal)', 'var(--violet)', 'var(--rose)', 'var(--amber)', 'var(--sky)'][i % 5];
   return `<div class="ribbon">
     <div class="total"><b class="silver">${int(total)}</b><span class="muted">طلب · ${money(ops.totalAmount)} ر.س</span></div>
     <div class="flow" role="img" aria-label="توزيع الطلبات على القنوات">${channels.map((ch, i) => {
       const n = ops.channels[ch.key]?.count || 0;
-      return n ? `<span style="flex:${n};background:${shade(i)};--i:${i}" title="${esc(ch.name)}: ${n}"></span>` : '';
+      return n ? `<span style="flex:${n};background:${shade(i)};--c:${shade(i)};--i:${i}" title="${esc(ch.name)}: ${n}"></span>` : '';
     }).join('')}</div>
     <div class="keys">${channels.map((ch, i) => {
       const n = ops.channels[ch.key]?.count || 0;
