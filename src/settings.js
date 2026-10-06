@@ -1,0 +1,105 @@
+import { HttpError } from './http.js';
+
+const SAT_THU = [
+  { id: 'am', name: 'الفترة الصباحية', start: '07:00', end: '12:20' },
+  { id: 'pm', name: 'الفترة المسائية', start: '13:00', end: '21:00' },
+];
+
+export const DEFAULTS = {
+  schedule: {
+    // Keys are weekdays: 0 = Sunday ... 5 = Friday, 6 = Saturday.
+    days: {
+      0: SAT_THU, 1: SAT_THU, 2: SAT_THU, 3: SAT_THU, 4: SAT_THU,
+      5: [{ id: 'fri', name: 'دوام الجمعة', start: '14:00', end: '21:00' }],
+      6: SAT_THU,
+    },
+  },
+  grace_minutes: 10,
+  max_exit_minutes: 30,
+  security: {
+    allowed_ips: [],      // empty = any network
+    geo: null,            // { lat, lng, radius } in metres
+    require_geo: false,
+    max_clock_skew_minutes: 5,
+  },
+  channels: [
+    { key: 'salla', name: 'سلة' },
+    { key: 'tabby', name: 'تابي' },
+    { key: 'tamara', name: 'تمارا' },
+    { key: 'madfu', name: 'مدفوع' },
+    { key: 'myspay', name: 'ماي اس باي' },
+  ],
+};
+
+export function getSettings(db) {
+  const out = structuredClone(DEFAULTS);
+  for (const { key, value } of db.prepare('SELECT key, value FROM settings').all()) {
+    if (key in out) out[key] = JSON.parse(value);
+  }
+  return out;
+}
+
+const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+function validSchedule(s) {
+  if (!s || typeof s !== 'object' || !s.days) throw new HttpError(400, 'جدول الدوام غير صالح');
+  const days = {};
+  for (let d = 0; d < 7; d++) {
+    const list = Array.isArray(s.days[d]) ? s.days[d] : [];
+    days[d] = list.map((p) => {
+      const id = String(p.id || '').trim().slice(0, 20);
+      if (!/^[a-z0-9_-]+$/i.test(id)) throw new HttpError(400, 'معرّف الفترة يجب أن يكون بالأحرف الإنجليزية');
+      if (!HHMM.test(p.start) || !HHMM.test(p.end) || p.start >= p.end) throw new HttpError(400, `وقت الفترة "${p.name || id}" غير صحيح`);
+      return { id, name: String(p.name || id).slice(0, 40), start: p.start, end: p.end };
+    }).sort((a, b) => a.start.localeCompare(b.start));
+    for (let i = 1; i < days[d].length; i++) {
+      if (days[d][i].start < days[d][i - 1].end) throw new HttpError(400, 'فترات اليوم الواحد متداخلة');
+    }
+  }
+  return { days };
+}
+
+export function saveSettings(db, patch) {
+  const cur = getSettings(db);
+  const next = { ...cur };
+  if ('schedule' in patch) next.schedule = validSchedule(patch.schedule);
+  if ('grace_minutes' in patch) next.grace_minutes = clampInt(patch.grace_minutes, 0, 120);
+  if ('max_exit_minutes' in patch) next.max_exit_minutes = clampInt(patch.max_exit_minutes, 1, 600);
+  if ('security' in patch) {
+    const s = patch.security || {};
+    const geo = s.geo && Number.isFinite(+s.geo.lat) && Number.isFinite(+s.geo.lng)
+      ? { lat: +s.geo.lat, lng: +s.geo.lng, radius: clampInt(s.geo.radius || 150, 20, 5000) }
+      : null;
+    next.security = {
+      allowed_ips: (Array.isArray(s.allowed_ips) ? s.allowed_ips : String(s.allowed_ips || '').split(/[\s,]+/))
+        .map((x) => String(x).trim()).filter(Boolean).slice(0, 20),
+      geo,
+      require_geo: !!s.require_geo && !!geo,
+      max_clock_skew_minutes: clampInt(s.max_clock_skew_minutes ?? 5, 1, 120),
+    };
+  }
+  if ('channels' in patch) {
+    const seen = new Set();
+    next.channels = (patch.channels || []).map((c) => ({
+      key: String(c.key || '').trim().toLowerCase().slice(0, 20),
+      name: String(c.name || '').trim().slice(0, 40),
+    })).filter((c) => /^[a-z0-9_]+$/.test(c.key) && c.name && !seen.has(c.key) && seen.add(c.key));
+    if (!next.channels.length) throw new HttpError(400, 'أضف قناة طلبات واحدة على الأقل');
+  }
+  const up = db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value');
+  for (const k of Object.keys(DEFAULTS)) up.run(k, JSON.stringify(next[k]));
+  return next;
+}
+
+function clampInt(v, lo, hi) {
+  const n = Math.round(Number(v));
+  if (!Number.isFinite(n)) throw new HttpError(400, 'قيمة رقمية غير صحيحة');
+  return Math.min(hi, Math.max(lo, n));
+}
+
+/** Distinct periods across the week, for assigning employees to shifts. */
+export function allPeriods(schedule) {
+  const map = new Map();
+  for (let d = 0; d < 7; d++) for (const p of schedule.days[d] || []) if (!map.has(p.id)) map.set(p.id, p.name);
+  return [...map].map(([id, name]) => ({ id, name }));
+}

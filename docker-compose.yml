@@ -1,0 +1,11 @@
+services:
+  staff:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - staff-data:/data
+    env_file: .env
+volumes:
+  staff-data:

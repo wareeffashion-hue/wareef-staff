@@ -1,0 +1,12 @@
+{
+  "name": "wareef-staff",
+  "version": "0.1.0",
+  "description": "نظام وريف لإدارة الموظفين: الحضور والانصراف، الخصومات والسلف، العمليات اليومية، والتذاكر",
+  "type": "module",
+  "private": true,
+  "engines": { "node": ">=22.13" },
+  "scripts": {
+    "start": "node --no-warnings=ExperimentalWarning src/server.js",
+    "test": "node --no-warnings=ExperimentalWarning --test \"test/*.test.js\""
+  }
+}
