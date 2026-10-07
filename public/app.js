@@ -191,22 +191,21 @@ if ('serviceWorker' in navigator) {
 }
 
 // ------------------------------------------------------------------ in-app alarm
-// When the app is open, an urgent alert rings like an alarm clock (sound + vibration) until stopped.
+// When the app is open, an urgent alert rings like an alarm clock (the «WAREEF» tone + vibration) until stopped.
 // Browsers only allow sound after the person has touched the page once, so the audio is unlocked on first tap.
 const ALARM = {
-  ctx: null,
+  audio: null,
   timer: null,
+  stopAt: null,
+  // a silent play on the first tap lets the alarm sound later without another tap
   unlock() {
-    try {
-      ALARM.ctx ||= new (window.AudioContext || window.webkitAudioContext)();
-      if (ALARM.ctx.state === 'suspended') ALARM.ctx.resume();
-    } catch {}
-  },
-  beep(t, f, len) {
-    const c = ALARM.ctx; const o = c.createOscillator(); const g = c.createGain();
-    o.type = 'square'; o.frequency.value = f;
-    g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(0.35, t + 0.01); g.gain.setValueAtTime(0.35, t + len - 0.03); g.gain.linearRampToValueAtTime(0, t + len);
-    o.connect(g).connect(c.destination); o.start(t); o.stop(t + len);
+    if (ALARM.audio) return;
+    const a = new Audio('/sound/wareef-alarm.mp3');
+    a.loop = true;
+    a.preload = 'auto';
+    ALARM.audio = a;
+    a.muted = true;
+    a.play().then(() => { a.pause(); a.currentTime = 0; a.muted = false; }).catch(() => { a.muted = false; });
   },
   ring({ title = 'منبّه الدوام', body = '', url = '' } = {}) {
     ALARM.stop();
@@ -217,17 +216,17 @@ const ALARM = {
     box.innerHTML = `<div class="alarm-card"><div class="alarm-bell">🔔</div><h2>${esc(title)}</h2><p>${esc(body).replace(/\n/g, '<br>')}</p><button class="btn" type="button">إيقاف المنبّه</button></div>`;
     document.body.append(box);
     $('button', box).onclick = () => { ALARM.stop(); if (url && url !== '/') location.hash = `#${url}`; };
-    let n = 0;
-    const cycle = () => {
-      if (ALARM.ctx?.state === 'running') { const t = ALARM.ctx.currentTime; for (let i = 0; i < 4; i++) { ALARM.beep(t + i * 0.25, 1046, 0.16); ALARM.beep(t + i * 0.25 + 0.08, 1318, 0.08); } }
-      navigator.vibrate?.([600, 200, 600, 200, 600]);
-      if (++n >= 30) ALARM.stop(); // about a minute
-    };
-    cycle();
-    ALARM.timer = setInterval(cycle, 2000);
+    ALARM.audio.currentTime = 0;
+    ALARM.audio.volume = 1;
+    ALARM.audio.play().catch(() => {});
+    const buzz = () => navigator.vibrate?.([600, 200, 600, 200, 600]);
+    buzz();
+    ALARM.timer = setInterval(buzz, 2600);
+    ALARM.stopAt = setTimeout(ALARM.stop, 60000); // about a minute
   },
   stop() {
-    clearInterval(ALARM.timer); ALARM.timer = null;
+    clearInterval(ALARM.timer); clearTimeout(ALARM.stopAt); ALARM.timer = ALARM.stopAt = null;
+    if (ALARM.audio) { ALARM.audio.pause(); ALARM.audio.currentTime = 0; }
     navigator.vibrate?.(0);
     $$('.alarm').forEach((el) => el.remove());
   },
@@ -668,7 +667,7 @@ PAGES.account = async () => {
         <ol class="small">
           <li>اضغط مطوّلاً على إشعار وريف لما يوصلك ← <b>الإعدادات</b> (أو: إعدادات الجوال ← التطبيقات ← <b>Chrome</b>، أو تطبيق <b>وريف</b> إذا أضفته للشاشة الرئيسية ← الإشعارات).</li>
           <li>افتح فئة الموقع <b>wareef</b> (تحت «المواقع» أو «Sites»).</li>
-          <li>اختر <b>تنبيه / Alerting</b> بدل «صامت»، وفعّل <b>الصوت</b> و<b>الاهتزاز</b> و<b>الإظهار على الشاشة</b>، واختر نغمة واضحة.</li>
+          <li>اختر <b>تنبيه / Alerting</b> بدل «صامت»، وفعّل <b>الصوت</b> و<b>الاهتزاز</b> و<b>الإظهار على الشاشة</b>. وللنغمة: نزّل <a href="/sound/wareef-alarm.mp3" download="wareef-alarm.mp3">نغمة وريف</a> واخترها من «الصوت».</li>
           <li>تأكد أن الجوال مو على الصامت أو «عدم الإزعاج»، وأن توفير البطارية ما يقيّد Chrome.</li>
         </ol>
         <p class="muted small">ولما يكون النظام مفتوح، المنبّه يرنّ ويهزّ بنفسه لين تضغط «إيقاف المنبّه». جرّبه بزر «إرسال تنبيه تجربة».</p>

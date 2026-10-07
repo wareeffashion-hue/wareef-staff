@@ -37,6 +37,7 @@ const PUBLIC_DIR = fileURLToPath(new URL('../public/', import.meta.url));
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
   '.svg': 'image/svg+xml', '.png': 'image/png', '.ttf': 'font/ttf', '.woff2': 'font/woff2', '.webmanifest': 'application/manifest+json',
+  '.mp3': 'audio/mpeg',
 };
 const SECURITY_HEADERS = {
   'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
@@ -947,7 +948,7 @@ export function createApp(db) {
         return;
       }
       if (m?.methodNotAllowed) throw new HttpError(405, 'method not allowed');
-      if (req.method === 'GET' && !pathname.startsWith('/api/')) return await serveStatic(res, pathname);
+      if (req.method === 'GET' && !pathname.startsWith('/api/')) return await serveStatic(res, pathname, req.headers.range);
       throw new HttpError(404, 'not found');
     } catch (err) {
       const status = err.status || 500;
@@ -957,13 +958,24 @@ export function createApp(db) {
   };
 }
 
-async function serveStatic(res, pathname) {
+async function serveStatic(res, pathname, range = '') {
   const rel = normalize(pathname).replace(/^([/\\])+/, '');
   let file = join(PUBLIC_DIR, rel);
   if (!file.startsWith(PUBLIC_DIR) || !extname(rel) || !existsSync(file)) file = join(PUBLIC_DIR, 'index.html');
   const ext = extname(file);
   const body = await readFile(file);
+  // audio needs byte ranges so the browser can loop and rewind it
+  const m = ext === '.mp3' && /^bytes=(\d*)-(\d*)$/.exec(range);
+  if (m && (m[1] || m[2])) {
+    const start = m[1] ? +m[1] : Math.max(0, body.length - +m[2]);
+    const end = m[1] && m[2] ? Math.min(+m[2], body.length - 1) : body.length - 1;
+    if (start > end || start >= body.length) { res.writeHead(416, { 'Content-Range': `bytes */${body.length}` }); res.end(); return; }
+    res.writeHead(206, { 'Content-Type': MIME[ext], 'Content-Range': `bytes ${start}-${end}/${body.length}`, 'Accept-Ranges': 'bytes', 'Cache-Control': 'public, max-age=3600', 'X-Content-Type-Options': 'nosniff' });
+    res.end(body.subarray(start, end + 1));
+    return;
+  }
   res.writeHead(200, {
+    ...(ext === '.mp3' ? { 'Accept-Ranges': 'bytes' } : {}),
     'Content-Type': MIME[ext] || 'application/octet-stream',
     'Cache-Control': ext === '.html' || rel === 'sw.js' || ext === '.webmanifest' ? 'no-cache' : 'public, max-age=3600',
     'X-Content-Type-Options': 'nosniff',
