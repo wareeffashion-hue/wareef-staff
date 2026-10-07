@@ -530,7 +530,7 @@ export function createApp(db) {
     requireManager(user);
     const { from, to } = range(url, 7);
     const rows = loadAttendance(db, { from, to, userId: Number(url.searchParams.get('user_id')) || null });
-    return { from, to, rows: hideMoney(user, rows), summary: hideMoney(user, summarize(rows)) };
+    return { from, to, lateRate: getSettings(db).late_minutes_per_riyal ?? 3, rows: hideMoney(user, rows), summary: hideMoney(user, summarize(rows)) };
   }, { auth: true });
   r.get('/api/punches', ({ url, user }) => {
     requireManager(user);

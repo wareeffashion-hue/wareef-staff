@@ -992,7 +992,7 @@ PAGES.attendance = async () => {
     <section class="panel"><header><h2>الملخص</h2><span class="muted small">${st.from} إلى ${st.to}</span></header>
       ${table(['الموظف', 'أيام العمل', 'حضور', 'غياب', 'غياب جزئي', 'أيام تأخير', 'دقائق التأخير', 'انصراف مبكر', 'خروج أثناء الدوام', 'إضافي', ...(mny ? ['الخصم المقترح (ر.س)'] : [])],
         d.summary.map((s) => `<tr><td><b>${esc(s.name)}</b></td><td>${s.workDays}</td><td>${s.presentDays}</td><td>${s.absentDays ? pill(s.absentDays, 'bad') : 0}</td><td>${s.partialDays}</td><td>${s.lateDays}</td><td>${mn(s.lateMinutes)}</td><td>${mn(s.earlyMinutes)}</td><td>${mn(s.exitMinutes)}</td><td>${hm(s.overtimeMinutes)}</td>${mny ? `<td>${money(s.suggested)}</td>` : ''}</tr>`))}
-      <p class="muted small" ${mny ? '' : 'hidden'}>الخصم المقترح يُحسب من الراتب: أجر اليوم = الراتب ÷ 30، مقسوماً على دقائق دوام ذلك اليوم. لا يُخصم شيء إلا إذا اعتمدته من صفحة الرواتب أو الخصومات.</p>
+      <p class="muted small" ${mny ? '' : 'hidden'}>الخصم المقترح: ${d.lateRate ? `التأخير بريال عن كل ${d.lateRate} دقائق، والانصراف` : 'التأخير والانصراف'} المبكر والخروج والغياب من الراتب (أجر اليوم = الراتب ÷ 30، مقسوماً على دقائق دوام ذلك اليوم). لا يُخصم شيء إلا إذا اعتمدته من صفحة الرواتب أو الخصومات.</p>
     </section>
     <section class="panel"><header><h2>التفاصيل اليومية</h2><span class="muted small">اضغط على أي صف لعرض البصمات</span></header>
       ${table(['اليوم', 'الموظف', 'الحالة', 'الحضور', 'الانصراف', 'تأخير', 'انصراف مبكر', 'خروج', 'ساعات العمل', 'إضافي', ...(mny ? ['مقترح'] : []), 'ملاحظات'],
@@ -1590,8 +1590,9 @@ PAGES.settings = async () => {
       <div class="row">
         <label class="f">فترة السماح للتأخير (دقائق)<input type="number" min="0" max="120" id="s-grace" value="${s.grace_minutes}"></label>
         <label class="f">أقصى مدة للخروج المؤقت (دقائق)<input type="number" min="1" max="600" id="s-exit" value="${s.max_exit_minutes}"></label>
+        <label class="f">خصم التأخير: ريال لكل (دقائق)<input type="number" min="0" max="600" id="s-lrate" value="${s.late_minutes_per_riyal ?? 3}"></label>
       </div>
-      <p class="muted small">التأخير ضمن فترة السماح لا يُحسب. إذا تجاوزها يُحسب التأخير كاملاً من بداية الدوام.</p>
+      <p class="muted small">التأخير ضمن فترة السماح لا يُحسب. إذا تجاوزها يُحسب التأخير كاملاً من بداية الدوام، ويُقترح خصم ريال عن كل ${s.late_minutes_per_riyal ?? 3} دقائق تأخير (ضع 0 ليُحسب من الراتب).</p>
     </section>
     <section class="panel"><header><h2>الحماية من التلاعب</h2></header>
       <label class="f">شبكات المحل المسموحة (عنوان IP لكل سطر، اتركه فارغاً للسماح بأي شبكة)<textarea id="s-ips" dir="ltr" rows="3">${esc(s.security.allowed_ips.join('\n'))}</textarea></label>
@@ -1673,6 +1674,7 @@ PAGES.settings = async () => {
       schedule: { days },
       grace_minutes: $('#s-grace', pg).value,
       max_exit_minutes: $('#s-exit', pg).value,
+      late_minutes_per_riyal: $('#s-lrate', pg).value,
       security: {
         allowed_ips: $('#s-ips', pg).value,
         geo: lat && lng ? { lat, lng, radius: $('#s-rad', pg).value } : null,

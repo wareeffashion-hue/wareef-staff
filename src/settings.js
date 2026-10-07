@@ -15,6 +15,7 @@ export const DEFAULTS = {
     },
   },
   grace_minutes: 10,
+  late_minutes_per_riyal: 3, // lateness fine: one riyal per this many minutes; 0 = by salary like other missing time
   max_exit_minutes: 30,
   security: {
     allowed_ips: [],      // empty = any network
@@ -98,6 +99,7 @@ export function saveSettings(db, patch) {
   const next = { ...cur };
   if ('schedule' in patch) next.schedule = validSchedule(patch.schedule);
   if ('grace_minutes' in patch) next.grace_minutes = clampInt(patch.grace_minutes, 0, 120);
+  if ('late_minutes_per_riyal' in patch) next.late_minutes_per_riyal = clampInt(patch.late_minutes_per_riyal, 0, 600);
   if ('max_exit_minutes' in patch) next.max_exit_minutes = clampInt(patch.max_exit_minutes, 1, 600);
   if ('security' in patch) {
     const s = patch.security || {};

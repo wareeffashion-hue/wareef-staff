@@ -101,3 +101,15 @@ test('approved hourly permission is not lateness, exit or absence, and not time 
     punches: [p('13:00', 'in'), p('21:00', 'out')] });
   assert.equal(whole.absentPeriods, 0);
 });
+
+test('lateness fine: one riyal per 3 minutes, even without a salary; other missing time by salary', () => {
+  const late = [p('07:25', 'in'), p('12:20', 'out'), p('13:15', 'in'), p('21:00', 'out')]; // 40 min late
+  assert.equal(computeDay({ date: SAT, periods, now: evening, grace: 10, lateRate: 3, punches: late }).suggested, 13.33);
+  assert.equal(computeDay({ date: SAT, periods, now: evening, grace: 10, lateRate: 3, salary: 3000, punches: late }).suggested, 13.33);
+  const early = computeDay({ date: SAT, periods, now: evening, grace: 10, lateRate: 3, salary: 3000,
+    punches: [p('07:30', 'in'), p('12:20', 'out'), p('13:00', 'in'), p('20:30', 'out')] }); // 30 late + 30 early
+  const perMinute = 3000 / 30 / (320 + 480);
+  assert.equal(early.suggested, Math.round((30 / 3 + perMinute * 30) * 100) / 100);
+  // rate 0 prices lateness from the salary as before
+  assert.equal(computeDay({ date: SAT, periods, now: evening, grace: 10, lateRate: 0, salary: 3000, punches: late }).suggested, Math.round(perMinute * 40 * 100) / 100);
+});

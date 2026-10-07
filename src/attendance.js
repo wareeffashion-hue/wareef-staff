@@ -25,6 +25,7 @@ export function periodsFor(user, date, schedule, holiday = false) {
  * @param {number} o.grace           minutes of lateness forgiven
  * @param {number} o.maxExit         minutes a temporary exit may last before it's flagged
  * @param {number} o.salary          monthly salary, for the suggested deduction
+ * @param {number} o.lateRate        minutes of lateness per riyal of fine (0 = priced by salary)
  * @param {number} o.now             epoch ms
  */
 /** Merge overlapping [start, end] ranges. */
@@ -41,7 +42,7 @@ function merge(list) {
  * `permits` are approved hourly permissions ([start, end] epoch ms): time inside them counts as
  * covered for lateness, early leave, exits and absence, but not as time worked.
  */
-export function computeDay({ date, punches, periods, excuse = null, grace = 0, maxExit = 30, salary = 0, now = Date.now(), permits = [] }) {
+export function computeDay({ date, punches, periods, excuse = null, grace = 0, maxExit = 30, salary = 0, lateRate = 0, now = Date.now(), permits = [] }) {
   const sorted = [...punches].sort((a, b) => a.ts - b.ts);
   const flags = new Set();
   const intervals = []; // [start, end] while present
@@ -147,11 +148,12 @@ export function computeDay({ date, punches, periods, excuse = null, grace = 0, m
   else if (started.every((p) => p.state === 'not_arrived')) res.status = 'not_arrived';
   else if (res.lateMinutes > 0) res.status = 'late';
 
-  if (salary > 0 && scheduledMinutes > 0) {
-    const perMinute = salary / 30 / scheduledMinutes;
-    const live = out.filter((p) => p.state === 'not_arrived').reduce((t, p) => t + p.late, 0);
-    res.suggested = round2(perMinute * (res.lateMinutes - live + res.earlyMinutes + res.exitMinutes + res.absentMinutes));
-  }
+  // Lateness has a flat fine (a riyal per few minutes); other missing time is priced from the salary.
+  const perMinute = salary > 0 && scheduledMinutes > 0 ? salary / 30 / scheduledMinutes : 0;
+  const live = out.filter((p) => p.state === 'not_arrived').reduce((t, p) => t + p.late, 0);
+  const late = res.lateMinutes - live;
+  const lateFine = lateRate > 0 ? late / lateRate : perMinute * late;
+  res.suggested = round2(lateFine + perMinute * (res.earlyMinutes + res.exitMinutes + res.absentMinutes));
   return res;
 }
 
@@ -203,6 +205,7 @@ export function loadAttendance(db, { from, to, userId = null, now = Date.now() }
         grace: settings.grace_minutes,
         maxExit: settings.max_exit_minutes,
         salary: u.salary,
+        lateRate: settings.late_minutes_per_riyal ?? 3,
         now,
         permits: permitsOf.get(`${u.id}|${date}`) || [],
       });
