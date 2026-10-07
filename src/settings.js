@@ -35,6 +35,7 @@ export const DEFAULTS = {
   ],
   notify: {
     manager_phone: '',
+    app_url: '',                 // system address shown at the bottom of messages
     remind_staff: true,          // remind employees to punch in / out
     remind_after_minutes: 10,
     shift_alerts: true,          // alarms before each period starts and when it ends (break / end of day)
@@ -117,6 +118,7 @@ export function saveSettings(db, patch) {
     if (n.summary_time && !HHMM.test(n.summary_time)) throw new HttpError(400, 'وقت الملخص اليومي غير صحيح');
     next.notify = {
       manager_phone: phone,
+      app_url: /^https?:\/\/\S+$/.test(String(n.app_url || '').trim()) ? String(n.app_url).trim().slice(0, 200) : '',
       remind_staff: !!n.remind_staff,
       remind_after_minutes: clampInt(n.remind_after_minutes ?? 10, 1, 120),
       shift_alerts: !!n.shift_alerts,

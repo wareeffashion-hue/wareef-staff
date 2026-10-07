@@ -78,7 +78,7 @@ ${table(['الموظف', 'النوع', 'المبلغ', 'التفاصيل'], [
     ...d.debts.map((x) => [esc(x.user_name), x.kind === 'loan' ? 'سلفة' : 'سداد سلفة', n(x.amount), esc(x.note)]),
   ])}
 
-<footer>وريف · فخامة تليق بك · صدر التقرير ${esc(new Date().toISOString().slice(0, 16).replace('T', ' '))} UTC</footer>
+<footer>وريف · فريق العمل · صدر التقرير ${esc(new Date().toISOString().slice(0, 16).replace('T', ' '))} UTC</footer>
 <script src="/print.js"></script>
 </body></html>`;
 }

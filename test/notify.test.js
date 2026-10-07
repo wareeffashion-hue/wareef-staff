@@ -4,6 +4,7 @@ import { openDb } from '../src/db.js';
 import { bootstrap } from '../src/auth.js';
 import { saveSettings } from '../src/settings.js';
 import { at } from '../src/time.js';
+import * as msg from '../src/messages.js';
 import { flush, normalizePhone, notifyEmployee, queue, tick, dailySummary, customRequest } from '../src/notify.js';
 import { loadAttendance } from '../src/attendance.js';
 
@@ -66,10 +67,10 @@ test('daily summary at the configured time, once', () => {
   tick(db, at(SAT, '21:40'));
   const s = all(db).filter((x) => x.kind === 'summary');
   assert.equal(s.length, 1);
-  assert.match(s[0].body, /ملخص يوم 2026-10-03/);
+  assert.match(s[0].body, /ملخص السبت/);
   assert.match(s[0].body, /لم يُسجَّل:/);
   const text = dailySummary(db, SAT, loadAttendance(db, { from: SAT, to: SAT, now: at(SAT, '22:00') }));
-  assert.match(text, /الغياب: /);
+  assert.match(text, /غياب: \*/);
 });
 
 test('switches turn notification groups off', () => {
@@ -121,11 +122,11 @@ test('shift alarms: before start, at break, at end of day, each once', () => {
   tick(db, at(SAT, '06:50'));
   tick(db, at(SAT, '06:51'));
   assert.equal(alarms().length, 1);
-  assert.match(alarms()[0].body, /تبدأ الساعة 07:00/);
+  assert.match(alarms()[0].body, /تبدأ الساعة \*07:00\*/);
   tick(db, at(SAT, '12:20'));
-  assert.match(alarms().at(-1).body, /وقت الاستراحة.*13:00/);
+  assert.match(alarms().at(-1).body, /وقت الاستراحة[\s\S]*13:00/);
   tick(db, at(SAT, '12:50'));
-  assert.match(alarms().at(-1).body, /المسائية تبدأ الساعة 13:00/);
+  assert.match(alarms().at(-1).body, /منبّه الفترة المسائية[\s\S]*\*13:00\*/);
   tick(db, at(SAT, '21:00'));
   assert.match(alarms().at(-1).body, /انتهى دوامك/);
   assert.equal(alarms().length, 4);
@@ -133,4 +134,19 @@ test('shift alarms: before start, at break, at end of day, each once', () => {
   const db2 = setup();
   tick(db2, at(SAT, '12:40'));
   assert.equal(all(db2).filter((x) => x.kind === 'alarm_start' && x.body.includes('07:00')).length, 0);
+});
+
+test('message cards: brand header, fields, quote, and the right sign-off', () => {
+  const e = msg.deduction({ amount: 50, date: '2026-10-03', category: 'تأخير', reason: 'تأخير 45 دقيقة', link: 'https://x.example' });
+  const lines = e.split('\n');
+  assert.equal(lines[0], '*وريف · فريق العمل*');
+  assert.match(e, /📄 \*إشعار خصم\*/);
+  assert.match(e, /▫️ المبلغ: \*50 ر\.س\*/);
+  assert.match(e, /^> تأخير 45 دقيقة$/m);
+  assert.match(e, /🔗 https:\/\/x\.example/);
+  assert.ok(msg.MOTTOS.some((m) => lines.at(-1) === `✨ _${m}_`), 'employees get a motivating line');
+  assert.doesNotMatch(e, /فخامة تليق بك/);
+  const m = msg.mgrLate({ name: 'منذر', period: 'الفترة الصباحية', start: '07:00', now: '07:10' });
+  assert.equal(m.split('\n').at(-1), '_وريف · لوحة المدير_');
+  assert.match(msg.alarmStart({ name: 'علي', period: 'الفترة المسائية', start: '13:00', now: '12:50', grace: 10 }), /صباح الخير|مساء الخير/);
 });

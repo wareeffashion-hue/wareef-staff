@@ -146,7 +146,7 @@ function renderLogin() {
   window.removeEventListener('hashchange', route);
   app.innerHTML = `<div class="login"><form class="card form" id="loginForm">
     <img src="/img/logo-full.png" alt="وريف">
-    <p class="tag">فريق العمل · فخامة تليق بك</p>
+    <p class="tag">فريق واحد، هدف واحد</p>
     <label class="f">اسم المستخدم<input name="username" id="lg-user" autocomplete="username" autocapitalize="none" dir="ltr" required></label>
     <label class="f">كلمة المرور<input name="password" id="lg-pass" type="password" autocomplete="current-password" dir="ltr" required></label>
     <button class="btn" type="submit">دخول</button>
@@ -1089,6 +1089,15 @@ PAGES.reports = async () => {
   sync();
 };
 
+/** Render WhatsApp markup (*bold*, _italic_, > quote) as HTML, for previews. */
+function waFormat(text) {
+  return text.split('\n').map((line) => {
+    let h = esc(line).replace(/\*([^*\n]+)\*/g, '<b>$1</b>').replace(/(^|\s)_([^_\n]+)_/g, '$1<i>$2</i>');
+    if (line.startsWith('> ')) h = `<span class="wa-q">${h.slice(5)}</span>`;
+    return h || '&nbsp;';
+  }).join('<br>');
+}
+
 /** The WhatsApp link box: shows the QR while waiting for a scan, then the linked number. */
 function waPanel(pg) {
   const box = $('#wa-link', pg);
@@ -1177,6 +1186,7 @@ PAGES.settings = async () => {
       <div class="row">
         <label class="f">جوال المدير (تصله التنبيهات والملخص)<input id="n-phone" dir="ltr" inputmode="tel" placeholder="05xxxxxxxx" value="${esc(s.notify.manager_phone)}"></label>
         <label class="f">وقت الملخص اليومي<input type="time" id="n-time" value="${s.notify.summary_time}"></label>
+        <label class="f">رابط النظام (يظهر أسفل الرسائل)<input id="n-url" dir="ltr" placeholder="https://..." value="${esc(s.notify.app_url || location.origin)}"></label>
         <label class="f">تذكير الموظف بعد بداية الدوام بـ (دقائق)<input type="number" id="n-after" min="1" max="120" value="${s.notify.remind_after_minutes}"></label>
         <label class="f">منبّه قبل بداية كل فترة بـ (دقائق)<input type="number" id="n-before" min="1" max="120" value="${s.notify.alert_before_minutes}"></label>
       </div>
@@ -1187,7 +1197,7 @@ PAGES.settings = async () => {
         <label class="check"><input type="checkbox" id="n-acc" ${s.notify.staff_account ? 'checked' : ''}>إشعار الموظف عن حسابه: خصم، سلفة أو سداد، رد على تذكرته، قرار على طلبه</label>
         <label class="check"><input type="checkbox" id="n-sum" ${s.notify.daily_summary ? 'checked' : ''}>ملخص يومي للمدير: الحضور والتأخير والغياب، الطلبات حسب القناة، الأرقام اليومية، وما لم يُسجَّل</label>
       </div>
-      <div class="row"><button type="button" class="btn ghost" id="n-test" style="flex:0 0 auto">إرسال رسالة تجربة لجوالي</button><button type="button" class="btn ghost" id="n-test-sum" style="flex:0 0 auto">أرسل ملخص اليوم الآن</button><a class="link" href="#/notifications" style="flex:0 0 auto;align-self:center">سجل الإشعارات</a></div>
+      <div class="row"><button type="button" class="btn ghost" id="n-test" style="flex:0 0 auto">إرسال رسالة تجربة لجوالي</button><button type="button" class="btn ghost" id="n-test-sum" style="flex:0 0 auto">أرسل ملخص اليوم الآن</button><button type="button" class="btn ghost" id="n-preview" style="flex:0 0 auto">معاينة شكل الرسائل</button><a class="link" href="#/notifications" style="flex:0 0 auto;align-self:center">سجل الإشعارات</a></div>
       <p class="muted small">أرقام الموظفين تُضاف من صفحة الموظفين. احفظ الإعدادات قبل التجربة.</p>
     </section>
     <section class="panel"><header><h2>الأرقام اليومية</h2><span class="muted small">البنود اللي يسجّلها الموظفون يومياً. حدّد من يسجّل كل بند من صفحة الموظفين</span></header>
@@ -1204,6 +1214,10 @@ PAGES.settings = async () => {
     if (e.target.matches('[data-addp]')) e.target.previousElementSibling.insertAdjacentHTML('beforeend', perRow({ id: '', name: '', start: '09:00', end: '17:00' }));
   });
   waPanel(pg);
+  $('#n-preview', pg).onclick = async (e) => {
+    const d = await act(e.target, () => api('/api/notifications/preview'));
+    if (d) modal('شكل رسائل واتساب', `<div class="wa-chat">${d.samples.map(([t, b]) => `<p class="wa-label">${esc(t)}</p><div class="wa-bubble">${waFormat(b)}</div>`).join('')}</div>`);
+  };
   $('#n-test', pg).onclick = (e) => act(e.target, () => api('/api/notifications/test', { method: 'POST', body: {} }), 'وصلت رسالة التجربة لجوالك');
   $('#n-test-sum', pg).onclick = (e) => act(e.target, () => api('/api/notifications/test', { method: 'POST', body: { kind: 'summary' } }), 'تم إرسال ملخص اليوم');
   $('#addMt', pg).onclick = () => $('#mts', pg).insertAdjacentHTML('beforeend', mtRow({ key: '', name: '', note: false }));
@@ -1237,7 +1251,7 @@ PAGES.settings = async () => {
       channels: $$('#chs .per', pg).map((r) => ({ key: field(r, 'key'), name: field(r, 'name') })),
       metrics: $$('#mts .per', pg).map((r) => ({ key: field(r, 'key'), name: field(r, 'name'), note: $('[name=note]', r).checked })),
       notify: {
-        manager_phone: $('#n-phone', pg).value.trim(), summary_time: $('#n-time', pg).value, remind_after_minutes: $('#n-after', pg).value,
+        manager_phone: $('#n-phone', pg).value.trim(), app_url: $('#n-url', pg).value.trim(), summary_time: $('#n-time', pg).value, remind_after_minutes: $('#n-after', pg).value,
         shift_alerts: $('#n-alarm', pg).checked, alert_before_minutes: $('#n-before', pg).value,
         remind_staff: $('#n-staff', pg).checked, alert_manager: $('#n-mgr', pg).checked, staff_account: $('#n-acc', pg).checked, daily_summary: $('#n-sum', pg).checked,
       },

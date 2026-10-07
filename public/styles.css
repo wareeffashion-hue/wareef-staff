@@ -303,3 +303,8 @@ body::after { content: ""; position: fixed; inset: 0; z-index: 0; pointer-events
 .wa-link .qr { width: 220px; max-width: 100%; padding: 10px; background: #fff; border-radius: 14px; border: 1px solid var(--line); box-shadow: var(--shadow); }
 .wa-link .qr svg { display: block; width: 100%; height: auto; }
 .wa-link ol { margin: 0; padding-inline-start: 20px; display: grid; gap: 6px; flex: 1 1 240px; }
+
+.wa-chat { background: #efe7de; border-radius: 14px; padding: 16px; display: grid; gap: 6px; }
+.wa-label { font-size: .75rem; color: #6b6259; margin-top: 8px; }
+.wa-bubble { background: #fff; color: #111b21; border-radius: 4px 12px 12px 12px; padding: 10px 12px; max-width: 420px; font-size: .9rem; line-height: 1.6; box-shadow: 0 1px 1px rgb(0 0 0 / 12%); justify-self: start; }
+.wa-q { display: inline-block; border-inline-start: 3px solid #25d366; padding-inline-start: 8px; color: #54656f; }

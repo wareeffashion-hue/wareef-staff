@@ -20,7 +20,9 @@ import {
 } from './reports.js';
 import { renderDailyReport } from './print.js';
 import { waAutoStart, waLogout, waQrSvg, waStart, waStatus } from './wa.js';
-import { flush, normalizePhone, notifyEmployee, notifyManager, providerStatus, queue, startNotifier, dailySummary } from './notify.js';
+import { appLink, flush, normalizePhone, notifyEmployee, notifyManager, providerStatus, queue, startNotifier, dailySummary } from './notify.js';
+import * as msg from './messages.js';
+import { DEDUCTION_LABELS, TICKET_KINDS } from './reports.js';
 
 const PUBLIC_DIR = fileURLToPath(new URL('../public/', import.meta.url));
 const MIME = {
@@ -125,9 +127,9 @@ export function createApp(db) {
     const p = recordPunch(db, user, body, { ip: clientIp(req), device: dev.id, userAgent: req.headers['user-agent'] || '' });
     const serious = p.flags.filter((f) => f !== 'new_device');
     if (serious.length) {
-      notifyManager(db, 'flag', `بصمة مشبوهة: ${user.name} سجّل ${{ in: 'حضور', out: 'انصراف', leave: 'خروج مؤقت', back: 'عودة' }[p.type]} الساعة ${localTime(p.ts)}. السبب: ${serious.map((f) => FLAG_LABELS[f]).join('، ')}.`);
+      notifyManager(db, 'flag', msg.mgrFlag({ name: user.name, type: p.type, time: localTime(p.ts), reasons: serious.map((f) => FLAG_LABELS[f]) }));
     }
-    if (p.type === 'leave') notifyManager(db, 'leave', `${user.name} خرج خروجاً مؤقتاً الساعة ${localTime(p.ts)}. السبب: ${text(body.note, 200)}`);
+    if (p.type === 'leave') notifyManager(db, 'leave', msg.mgrLeave({ name: user.name, time: localTime(p.ts), reason: text(body.note, 200) }));
     send(res, 200, myToday(db, user), dev.cookie ? { 'Set-Cookie': dev.cookie } : {});
   }, { auth: true });
   r.get('/api/my/month', ({ url, user }) => {
@@ -158,7 +160,7 @@ export function createApp(db) {
     const res = db.prepare('INSERT INTO tickets (user_id, date, kind, title, body, priority, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
       .run(user.id, localDate(now), kind, title, text(b.body, 4000), priority, now, now);
     if (user.role !== 'admin' && (kind !== 'achievement' || priority === 'high')) {
-      notifyManager(db, 'ticket', `تذكرة جديدة من ${user.name}${priority === 'high' ? ' (أولوية عالية)' : ''}: ${title}`);
+      notifyManager(db, 'ticket', msg.mgrTicket({ name: user.name, title, kind: TICKET_KINDS[kind], high: priority === 'high' }));
     }
     return { id: Number(res.lastInsertRowid) };
   }, { auth: true });
@@ -178,7 +180,7 @@ export function createApp(db) {
     if (!body) throw new HttpError(400, 'اكتب الرد');
     const now = Date.now();
     db.prepare('INSERT INTO ticket_replies (ticket_id, user_id, body, created_at) VALUES (?, ?, ?, ?)').run(t.id, user.id, body, now);
-    if (user.role === 'admin' && t.user_id !== user.id) notifyEmployee(db, t.user_id, 'ticket_reply', `رد المدير على تذكرتك «${t.title}»: ${body.slice(0, 300)}`);
+    if (user.role === 'admin' && t.user_id !== user.id) notifyEmployee(db, t.user_id, 'ticket_reply', msg.ticketReply({ title: t.title, reply: body.slice(0, 500), link: appLink(db) }));
     db.prepare('UPDATE tickets SET updated_at = ? WHERE id = ?').run(now, t.id);
     return { ok: true };
   }, { auth: true });
@@ -290,7 +292,7 @@ export function createApp(db) {
     const qty = num(b.quantity, 1, 1e6);
     const res = db.prepare('INSERT INTO requests (user_id, date, kind, sku, quantity, reason, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
       .run(user.id, localDate(now), kind, sku, qty, reason, now, now);
-    notifyManager(db, 'request', `${kind === 'release' ? 'طلب فسح لإرجاع منتجات' : 'طلب نواقص'} من ${user.name}: كود ${sku}، العدد ${qty}. السبب: ${reason.slice(0, 200)}`);
+    notifyManager(db, 'request', msg.mgrRequest({ name: user.name, kind, sku, qty, reason: reason.slice(0, 300) }));
     return { id: Number(res.lastInsertRowid) };
   }, { auth: true });
   r.put('/api/requests/:id', async ({ req, params, user }) => {
@@ -305,7 +307,7 @@ export function createApp(db) {
     if (status !== q.status) {
       const label = { pending: 'بانتظار المدير', approved: 'تمت الموافقة', rejected: 'مرفوض', done: 'تم التنفيذ' }[status];
       const resp = b.response !== undefined ? text(b.response, 300) : q.response;
-      notifyEmployee(db, q.user_id, 'request_status', `طلبك رقم ${q.id} (كود ${q.sku}): ${label}.${resp ? ` ملاحظة المدير: ${resp}` : ''}`);
+      notifyEmployee(db, q.user_id, 'request_status', msg.requestStatus({ id: q.id, kind: q.kind, sku: q.sku, qty: q.quantity, status, response: resp, link: appLink(db) }));
     }
     return { ok: true };
   }, { auth: true });
@@ -417,7 +419,7 @@ export function createApp(db) {
     const res = db.prepare('INSERT INTO deductions (user_id, date, amount, category, reason, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
       .run(userId, date, amount, category, text(b.reason, 300), user.id, Date.now());
     audit(db, user.id, 'deduction.add', userId, { date, amount, category, reason: text(b.reason, 300) });
-    notifyEmployee(db, userId, 'deduction', `تم تسجيل خصم بمبلغ ${amount} ر.س بتاريخ ${date}.${text(b.reason, 200) ? ` السبب: ${text(b.reason, 200)}` : ''}`);
+    notifyEmployee(db, userId, 'deduction', msg.deduction({ amount, date, category: DEDUCTION_LABELS[category], reason: text(b.reason, 200), link: appLink(db) }));
     return { id: Number(res.lastInsertRowid) };
   }, { auth: true });
   r.delete('/api/deductions/:id', ({ params, user }) => {
@@ -444,7 +446,7 @@ export function createApp(db) {
       .run(userId, date, kind, amount, text(b.note, 300), b.from_salary === false ? 0 : 1, user.id, Date.now());
     audit(db, user.id, `debt.${kind}`, userId, { date, amount, note: text(b.note, 300) });
     const bal = db.prepare("SELECT COALESCE(SUM(CASE WHEN kind = 'loan' THEN amount ELSE -amount END), 0) b FROM debts WHERE user_id = ?").get(userId).b;
-    notifyEmployee(db, userId, `debt_${kind}`, `${kind === 'loan' ? `تم تسجيل سلفة بمبلغ ${amount} ر.س` : `تم تسجيل سداد ${amount} ر.س من سلفتك`}. المتبقي عليك: ${Math.round(bal * 100) / 100} ر.س.`);
+    notifyEmployee(db, userId, `debt_${kind}`, msg.debt({ kind, amount, balance: Math.round(bal * 100) / 100, note: text(b.note, 200), link: appLink(db) }));
     return { id: Number(res.lastInsertRowid) };
   }, { auth: true });
   r.delete('/api/debts/:id', ({ params, user }) => {
@@ -540,13 +542,33 @@ export function createApp(db) {
     audit(db, user.id, 'whatsapp.logout', null, '');
     return waStatus();
   }, { auth: true });
+  r.get('/api/notifications/preview', ({ user }) => {
+    requireAdmin(user);
+    const link = appLink(db) || 'https://wareef-staff.up.railway.app';
+    const today = localDate();
+    return {
+      samples: [
+        ['منبّه قبل الدوام', msg.alarmStart({ name: 'عبدالله', period: 'الفترة الصباحية', start: '07:00', now: '06:50', grace: getSettings(db).grace_minutes, link })],
+        ['وقت الاستراحة', msg.alarmBreak({ name: 'عبدالله', period: 'الفترة الصباحية', nextStart: '13:00', link })],
+        ['نهاية الدوام', msg.alarmEnd({ name: 'عبدالله', end: '21:00', link })],
+        ['تذكير بالحضور', msg.remindIn({ name: 'باسم', period: 'الفترة المسائية', start: '13:00', link })],
+        ['إشعار خصم', msg.deduction({ amount: 50, date: today, category: 'تأخير', reason: 'تأخير 45 دقيقة يوم السبت', link })],
+        ['سلفة', msg.debt({ kind: 'loan', amount: 1000, balance: 1000, note: 'تُخصم على 4 أشهر', link })],
+        ['قرار على طلب', msg.requestStatus({ id: 12, kind: 'release', sku: 'AB-1042', qty: 3, status: 'approved', response: 'رجّعها للتاجر يوم الخميس', link })],
+        ['للمدير: لم يصل', msg.mgrLate({ name: 'منذر', period: 'الفترة الصباحية', start: '07:00', now: '07:10' })],
+        ['للمدير: بصمة مشبوهة', msg.mgrFlag({ name: 'علي', type: 'in', time: '07:02', reasons: ['نفس الجهاز استُخدم لبصمة موظف آخر'] })],
+        ['للمدير: طلب فسح', msg.mgrRequest({ name: 'باسم', kind: 'release', sku: 'AB-1042', qty: 3, reason: 'عيب مصنعي في الخياطة' })],
+        ['الملخص اليومي', dailySummary(db, today, loadAttendance(db, { from: today, to: today }))],
+      ],
+    };
+  }, { auth: true });
   r.post('/api/notifications/test', async ({ req, user }) => {
     requireAdmin(user);
     const b = parseJson(await readBody(req));
     const to = normalizePhone(b.to || getSettings(db).notify.manager_phone);
     if (!to) throw new HttpError(400, 'اكتب رقم جوال المدير في إعدادات الإشعارات أولاً');
     if (!providerStatus().configured) throw new HttpError(400, 'اربط حساب واتساب أولاً بمسح رمز QR من إعدادات الإشعارات');
-    const body = b.kind === 'summary' ? dailySummary(db, localDate(), loadAttendance(db, { from: localDate(), to: localDate() })) : 'وريف | رسالة تجربة: إشعارات واتساب تعمل ✓';
+    const body = b.kind === 'summary' ? dailySummary(db, localDate(), loadAttendance(db, { from: localDate(), to: localDate() })) : msg.test({ link: appLink(db) });
     queue(db, { to, body, kind: 'test' });
     await flush(db);
     const last = db.prepare("SELECT status, error FROM notifications WHERE kind = 'test' ORDER BY id DESC LIMIT 1").get();

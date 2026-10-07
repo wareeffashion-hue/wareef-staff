@@ -19,6 +19,7 @@ import { getSettings } from './settings.js';
 import { loadAttendance } from './attendance.js';
 import { opsRows } from './reports.js';
 import { waConnected, waSend, waStatus } from './wa.js';
+import * as msg from './messages.js';
 
 const env = process.env;
 
@@ -94,17 +95,19 @@ export function queue(db, { to, body, kind, key = null, userId = null }) {
 
 const phoneOf = (db, userId) => db.prepare('SELECT phone FROM users WHERE id = ? AND active = 1').get(userId)?.phone || '';
 const managerPhone = (db) => getSettings(db).notify.manager_phone;
+/** The system address shown at the bottom of employee messages. */
+export const appLink = (db) => getSettings(db).notify.app_url || env.PUBLIC_URL || '';
 
 /** To the employee about their own account (deduction, loan, replies...). */
 export function notifyEmployee(db, userId, kind, body, key = null) {
   if (!getSettings(db).notify.staff_account) return false;
-  return queue(db, { to: phoneOf(db, userId), body: `وريف | ${body}`, kind, key, userId });
+  return queue(db, { to: phoneOf(db, userId), body, kind, key, userId });
 }
 
 /** To the manager (alerts). */
 export function notifyManager(db, kind, body, key = null) {
   if (!getSettings(db).notify.alert_manager) return false;
-  return queue(db, { to: managerPhone(db), body: `وريف | ${body}`, kind, key });
+  return queue(db, { to: managerPhone(db), body, kind, key });
 }
 
 /** Send whatever is pending. Called every few seconds; one message at a time to stay gentle with the provider. */
@@ -145,6 +148,8 @@ export function tick(db, now = Date.now()) {
   const after = (n.remind_after_minutes || 10) * MIN;
   const before = (n.alert_before_minutes || 10) * MIN;
   const within = (t) => now >= t && now < t + 5 * MIN; // fire once, only close to the moment
+  const link = appLink(db);
+  const nowHHMM = localTime(now);
   for (const r of rows) {
     if (r.status === 'excused' || r.status === 'holiday' || r.status === 'off') continue;
     if (n.shift_alerts) {
@@ -155,13 +160,13 @@ export function tick(db, now = Date.now()) {
         const next = r.periods[i + 1];
         if (within(start - before) && !p.firstIn) {
           queue(db, { to, userId: r.userId, kind: 'alarm_start', key: `alarm_start:${r.userId}:${date}:${p.id}`,
-            body: `⏰ وريف | ${r.name}، ${p.name} تبدأ الساعة ${p.start}. لا تنسَ تسجيل الحضور أول ما توصل.` });
+            body: msg.alarmStart({ name: r.name, period: p.name, start: p.start, now: nowHHMM, grace: s.grace_minutes, link }) });
         }
         if (within(end)) {
           queue(db, { to, userId: r.userId, kind: next ? 'alarm_break' : 'alarm_end', key: `alarm_end:${r.userId}:${date}:${p.id}`,
             body: next
-              ? `⏰ وريف | انتهت ${p.name}. وقت الاستراحة: سجّل الانصراف الآن، والفترة القادمة تبدأ الساعة ${next.start}.`
-              : `⏰ وريف | انتهى دوامك اليوم الساعة ${p.end}. سجّل الانصراف قبل ما تطلع. يعطيك العافية.` });
+              ? msg.alarmBreak({ name: r.name, period: p.name, nextStart: next.start, link })
+              : msg.alarmEnd({ name: r.name, end: p.end, link }) });
         }
       });
     }
@@ -172,18 +177,18 @@ export function tick(db, now = Date.now()) {
       if (notArrived && now >= start + after && now < end) {
         if (n.remind_staff) {
           queue(db, { to: phoneOf(db, r.userId), userId: r.userId, kind: 'remind_in', key: `remind_in:${r.userId}:${date}:${p.id}`,
-            body: `وريف | ${r.name}، ما سجّلت حضورك في ${p.name} (تبدأ ${p.start}). سجّل بصمتك الآن، وإذا عندك عذر بلّغ المدير.` });
+            body: msg.remindIn({ name: r.name, period: p.name, start: p.start, link }) });
         }
-        notifyManager(db, 'late', `${r.name} ما سجّل حضور ${p.name} حتى الآن (بداية الدوام ${p.start}).`, `late:${r.userId}:${date}:${p.id}`);
+        notifyManager(db, 'late', msg.mgrLate({ name: r.name, period: p.name, start: p.start, now: nowHHMM }), `late:${r.userId}:${date}:${p.id}`);
       }
       if (p.absent && now < end + 30 * MIN) {
-        notifyManager(db, 'absent', `${r.name} غائب عن ${p.name} اليوم (${p.start} - ${p.end}).`, `absent:${r.userId}:${date}:${p.id}`);
+        notifyManager(db, 'absent', msg.mgrAbsent({ name: r.name, period: p.name, start: p.start, end: p.end }), `absent:${r.userId}:${date}:${p.id}`);
       }
     }
     const last = r.periods[r.periods.length - 1];
     if (n.remind_staff && last && r.liveState === 'in' && now >= at(date, last.end) + 20 * MIN) {
       queue(db, { to: phoneOf(db, r.userId), userId: r.userId, kind: 'remind_out', key: `remind_out:${r.userId}:${date}`,
-        body: `وريف | ${r.name}، انتهى دوامك الساعة ${last.end} وما سجّلت انصراف. إذا طلعت سجّل الانصراف الآن.` });
+        body: msg.remindOut({ name: r.name, end: last.end, link }) });
     }
   }
   if (n.daily_summary && n.manager_phone && localTime(now) >= n.summary_time) {
@@ -192,32 +197,50 @@ export function tick(db, now = Date.now()) {
 }
 
 export function dailySummary(db, date, rows, s = getSettings(db)) {
-  const count = (...st) => rows.filter((r) => st.includes(r.status)).length;
   const ops = opsRows(db, date, date)[0];
-  const lines = [`وريف | ملخص يوم ${date}`, ''];
-  lines.push(`الحضور: ${count('present', 'late', 'partial')} من ${rows.filter((r) => r.scheduledMinutes > 0).length}`);
+  const scheduled = rows.filter((r) => r.scheduledMinutes > 0);
+  const came = rows.filter((r) => ['present', 'late', 'partial', 'off_worked'].includes(r.status));
   const late = rows.filter((r) => r.lateMinutes > 0);
-  if (late.length) lines.push(`المتأخرون: ${late.map((r) => `${r.name} (${r.lateMinutes} د)`).join('، ')}`);
   const absent = rows.filter((r) => r.status === 'absent' || r.status === 'partial');
-  if (absent.length) lines.push(`الغياب: ${absent.map((r) => r.name + (r.status === 'partial' ? ' (جزئي)' : '')).join('، ')}`);
-  lines.push('');
+  const num = (n) => Number(n || 0).toLocaleString('en-US');
+  const day = new Date(`${date}T12:00:00Z`).toLocaleDateString('ar-SA-u-ca-gregory-nu-latn', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'UTC' });
+
+  const out = ['*وريف · فريق العمل*', '━━━━━━━━━━━━━━━', `📊 *ملخص ${day}*`, ''];
+  out.push('👥 *الحضور*');
+  out.push(`▫️ حضروا: *${came.length} من ${scheduled.length}*`);
+  out.push(`▫️ متأخرون: *${late.length}*${late.length ? `  (${late.map((r) => `${r.name} ${r.lateMinutes}د`).join('، ')})` : ''}`);
+  out.push(`▫️ غياب: *${absent.length}*${absent.length ? `  (${absent.map((r) => r.name + (r.status === 'partial' ? ' جزئي' : '')).join('، ')})` : ''}`);
+  const exits = rows.filter((r) => r.exitMinutes > 0);
+  if (exits.length) out.push(`▫️ خروج أثناء الدوام: ${exits.map((r) => `${r.name} ${r.exitMinutes}د`).join('، ')}`);
+
+  out.push('', '🛒 *الطلبات*');
   if (ops?.totalOrders) {
-    lines.push(`الطلبات: ${ops.totalOrders} بقيمة ${Math.round(ops.totalAmount).toLocaleString('en-US')} ر.س`);
-    lines.push(s.channels.map((c) => `${c.name} ${ops.channels[c.key]?.count || 0}`).join(' · '));
+    out.push(`▫️ الإجمالي: *${num(ops.totalOrders)} طلب*  ·  *${num(Math.round(ops.totalAmount))} ر.س*`);
+    for (const c of s.channels) {
+      const v = ops.channels[c.key];
+      if (v?.count) out.push(`   ${c.name}: ${num(v.count)}${v.amount ? `  (${num(Math.round(v.amount))} ر.س)` : ''}`);
+    }
   } else {
-    lines.push('الطلبات: لم تُسجَّل');
+    out.push('▫️ _لم تُسجَّل بعد_');
   }
+
   const missing = [];
+  const recorded = [];
   for (const m of s.metrics) {
     const v = ops?.metrics?.[m.key];
-    if (v) lines.push(`${m.name}: ${v.value}${v.note ? ` (${v.note})` : ''}`);
+    if (v) recorded.push(`▫️ ${m.name}: *${num(v.value)}*${v.note ? `\n> ${v.note.replace(/\n/g, '\n> ')}` : ''}`);
     else missing.push(m.name);
   }
-  if (missing.length) lines.push('', `لم يُسجَّل: ${missing.join('، ')}`);
+  if (recorded.length) out.push('', '📦 *العمليات*', ...recorded);
+  if (missing.length) out.push('', `⚠️ *لم يُسجَّل:* ${missing.join('، ')}`);
+
   const pending = db.prepare("SELECT COUNT(*) n FROM requests WHERE status = 'pending'").get().n;
   const tickets = db.prepare("SELECT COUNT(*) n FROM tickets WHERE status != 'closed'").get().n;
-  if (pending || tickets) lines.push('', `بانتظارك: ${pending} طلب فسح أو نواقص، ${tickets} تذكرة مفتوحة`);
-  return lines.join('\n');
+  if (pending || tickets) out.push('', `📌 *بانتظارك:* ${pending} طلب فسح أو نواقص · ${tickets} تذكرة مفتوحة`);
+  const link = appLink(db);
+  if (link) out.push('', `🔗 ${link}`);
+  out.push('━━━━━━━━━━━━━━━', '_وريف · لوحة المدير_');
+  return out.join('\n');
 }
 
 export function startNotifier(db) {
