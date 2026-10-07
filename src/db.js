@@ -194,6 +194,24 @@ const MIGRATIONS = [
   CREATE INDEX requests_status ON requests(status, created_at);
   CREATE INDEX requests_user ON requests(user_id, created_at);
   `,
+  // v3: WhatsApp notifications.
+  `
+  ALTER TABLE users ADD COLUMN phone TEXT NOT NULL DEFAULT '';
+  CREATE TABLE notifications (
+    id INTEGER PRIMARY KEY,
+    to_phone TEXT NOT NULL,
+    body TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    dedupe_key TEXT UNIQUE,          -- the same reminder is only ever queued once
+    user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    status TEXT NOT NULL CHECK (status IN ('pending', 'sent', 'failed', 'skipped')),
+    attempts INTEGER NOT NULL DEFAULT 0,
+    error TEXT,
+    created_at INTEGER NOT NULL,
+    sent_at INTEGER
+  );
+  CREATE INDEX notifications_status ON notifications(status, id);
+  `,
 ];
 
 export function openDb(path) {

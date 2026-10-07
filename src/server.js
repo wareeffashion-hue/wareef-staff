@@ -19,6 +19,7 @@ import {
   opsRows, opsSection, payroll, payrollSection, punchesSection, requestRows, requestsSection, stockRows, stockSection, ticketRows, ticketsSection, toCsv,
 } from './reports.js';
 import { renderDailyReport } from './print.js';
+import { flush, normalizePhone, notifyEmployee, notifyManager, providerStatus, queue, startNotifier, dailySummary } from './notify.js';
 
 const PUBLIC_DIR = fileURLToPath(new URL('../public/', import.meta.url));
 const MIME = {
@@ -63,7 +64,7 @@ function userView(u) {
   return {
     id: u.id, username: u.username, name: u.name, role: u.role, active: !!u.active, salary: u.salary,
     periods: u.periods ? JSON.parse(u.periods) : null, day_off: u.day_off, perms: JSON.parse(u.perms || '[]'),
-    has_password: !!u.password_hash, created_at: u.created_at,
+    has_password: !!u.password_hash, created_at: u.created_at, phone: u.phone || '',
   };
 }
 
@@ -120,7 +121,12 @@ export function createApp(db) {
     if (user.role !== 'employee') throw new HttpError(403, 'البصمة للموظفين فقط');
     const body = parseJson(await readBody(req));
     const dev = deviceId(req);
-    recordPunch(db, user, body, { ip: clientIp(req), device: dev.id, userAgent: req.headers['user-agent'] || '' });
+    const p = recordPunch(db, user, body, { ip: clientIp(req), device: dev.id, userAgent: req.headers['user-agent'] || '' });
+    const serious = p.flags.filter((f) => f !== 'new_device');
+    if (serious.length) {
+      notifyManager(db, 'flag', `بصمة مشبوهة: ${user.name} سجّل ${{ in: 'حضور', out: 'انصراف', leave: 'خروج مؤقت', back: 'عودة' }[p.type]} الساعة ${localTime(p.ts)}. السبب: ${serious.map((f) => FLAG_LABELS[f]).join('، ')}.`);
+    }
+    if (p.type === 'leave') notifyManager(db, 'leave', `${user.name} خرج خروجاً مؤقتاً الساعة ${localTime(p.ts)}. السبب: ${text(body.note, 200)}`);
     send(res, 200, myToday(db, user), dev.cookie ? { 'Set-Cookie': dev.cookie } : {});
   }, { auth: true });
   r.get('/api/my/month', ({ url, user }) => {
@@ -150,6 +156,9 @@ export function createApp(db) {
     const now = Date.now();
     const res = db.prepare('INSERT INTO tickets (user_id, date, kind, title, body, priority, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
       .run(user.id, localDate(now), kind, title, text(b.body, 4000), priority, now, now);
+    if (user.role !== 'admin' && (kind !== 'achievement' || priority === 'high')) {
+      notifyManager(db, 'ticket', `تذكرة جديدة من ${user.name}${priority === 'high' ? ' (أولوية عالية)' : ''}: ${title}`);
+    }
     return { id: Number(res.lastInsertRowid) };
   }, { auth: true });
   const ticketFor = (id, user) => {
@@ -168,6 +177,7 @@ export function createApp(db) {
     if (!body) throw new HttpError(400, 'اكتب الرد');
     const now = Date.now();
     db.prepare('INSERT INTO ticket_replies (ticket_id, user_id, body, created_at) VALUES (?, ?, ?, ?)').run(t.id, user.id, body, now);
+    if (user.role === 'admin' && t.user_id !== user.id) notifyEmployee(db, t.user_id, 'ticket_reply', `رد المدير على تذكرتك «${t.title}»: ${body.slice(0, 300)}`);
     db.prepare('UPDATE tickets SET updated_at = ? WHERE id = ?').run(now, t.id);
     return { ok: true };
   }, { auth: true });
@@ -276,8 +286,10 @@ export function createApp(db) {
     const reason = text(b.reason, 1000);
     if (!reason) throw new HttpError(400, 'اكتب السبب');
     const now = Date.now();
+    const qty = num(b.quantity, 1, 1e6);
     const res = db.prepare('INSERT INTO requests (user_id, date, kind, sku, quantity, reason, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(user.id, localDate(now), kind, sku, num(b.quantity, 1, 1e6), reason, now, now);
+      .run(user.id, localDate(now), kind, sku, qty, reason, now, now);
+    notifyManager(db, 'request', `${kind === 'release' ? 'طلب فسح لإرجاع منتجات' : 'طلب نواقص'} من ${user.name}: كود ${sku}، العدد ${qty}. السبب: ${reason.slice(0, 200)}`);
     return { id: Number(res.lastInsertRowid) };
   }, { auth: true });
   r.put('/api/requests/:id', async ({ req, params, user }) => {
@@ -289,6 +301,11 @@ export function createApp(db) {
     db.prepare('UPDATE requests SET status = ?, response = ?, handled_by = ?, updated_at = ? WHERE id = ?')
       .run(status, b.response !== undefined ? text(b.response, 1000) : q.response, user.id, Date.now(), q.id);
     audit(db, user.id, 'request.update', q.user_id, { id: q.id, status });
+    if (status !== q.status) {
+      const label = { pending: 'بانتظار المدير', approved: 'تمت الموافقة', rejected: 'مرفوض', done: 'تم التنفيذ' }[status];
+      const resp = b.response !== undefined ? text(b.response, 300) : q.response;
+      notifyEmployee(db, q.user_id, 'request_status', `طلبك رقم ${q.id} (كود ${q.sku}): ${label}.${resp ? ` ملاحظة المدير: ${resp}` : ''}`);
+    }
     return { ok: true };
   }, { auth: true });
   r.delete('/api/stock/:id', ({ params, user }) => {
@@ -399,6 +416,7 @@ export function createApp(db) {
     const res = db.prepare('INSERT INTO deductions (user_id, date, amount, category, reason, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
       .run(userId, date, amount, category, text(b.reason, 300), user.id, Date.now());
     audit(db, user.id, 'deduction.add', userId, { date, amount, category, reason: text(b.reason, 300) });
+    notifyEmployee(db, userId, 'deduction', `تم تسجيل خصم بمبلغ ${amount} ر.س بتاريخ ${date}.${text(b.reason, 200) ? ` السبب: ${text(b.reason, 200)}` : ''}`);
     return { id: Number(res.lastInsertRowid) };
   }, { auth: true });
   r.delete('/api/deductions/:id', ({ params, user }) => {
@@ -424,6 +442,8 @@ export function createApp(db) {
     const res = db.prepare('INSERT INTO debts (user_id, date, kind, amount, note, from_salary, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
       .run(userId, date, kind, amount, text(b.note, 300), b.from_salary === false ? 0 : 1, user.id, Date.now());
     audit(db, user.id, `debt.${kind}`, userId, { date, amount, note: text(b.note, 300) });
+    const bal = db.prepare("SELECT COALESCE(SUM(CASE WHEN kind = 'loan' THEN amount ELSE -amount END), 0) b FROM debts WHERE user_id = ?").get(userId).b;
+    notifyEmployee(db, userId, `debt_${kind}`, `${kind === 'loan' ? `تم تسجيل سلفة بمبلغ ${amount} ر.س` : `تم تسجيل سداد ${amount} ر.س من سلفتك`}. المتبقي عليك: ${Math.round(bal * 100) / 100} ر.س.`);
     return { id: Number(res.lastInsertRowid) };
   }, { auth: true });
   r.delete('/api/debts/:id', ({ params, user }) => {
@@ -455,6 +475,10 @@ export function createApp(db) {
       if (clash && clash.id !== existing?.id) throw new HttpError(409, 'اسم المستخدم مستخدم لموظف آخر');
     }
     if ('salary' in b) out.salary = num(b.salary || 0, 0, 1e6);
+    if ('phone' in b) {
+      out.phone = b.phone ? normalizePhone(b.phone) : '';
+      if (b.phone && !out.phone) throw new HttpError(400, 'رقم الجوال غير صحيح. اكتبه مثل 0501234567');
+    }
     if ('periods' in b) out.periods = Array.isArray(b.periods) ? JSON.stringify(b.periods.map(String)) : null;
     if ('day_off' in b) out.day_off = b.day_off === null || b.day_off === '' ? null : Math.round(num(b.day_off, 0, 6));
     if ('perms' in b) {
@@ -469,9 +493,9 @@ export function createApp(db) {
     requireAdmin(user);
     const b = parseJson(await readBody(req));
     const f = applyUser({ ...b, username: b.username, name: b.name });
-    const res = db.prepare(`INSERT INTO users (username, name, role, password_hash, salary, periods, day_off, perms, created_at)
-                            VALUES (?, ?, 'employee', ?, ?, ?, ?, ?, ?)`)
-      .run(f.username, f.name, f.password_hash || null, f.salary || 0, f.periods ?? null, f.day_off ?? null, f.perms || '[]', Date.now());
+    const res = db.prepare(`INSERT INTO users (username, name, role, password_hash, salary, periods, day_off, perms, phone, created_at)
+                            VALUES (?, ?, 'employee', ?, ?, ?, ?, ?, ?, ?)`)
+      .run(f.username, f.name, f.password_hash || null, f.salary || 0, f.periods ?? null, f.day_off ?? null, f.perms || '[]', f.phone || '', Date.now());
     audit(db, user.id, 'user.add', Number(res.lastInsertRowid), { name: f.name, username: f.username });
     return { id: Number(res.lastInsertRowid) };
   }, { auth: true });
@@ -488,7 +512,28 @@ export function createApp(db) {
     audit(db, user.id, 'user.update', existing.id, { changed, salary: 'salary' in f ? { from: existing.salary, to: f.salary } : undefined });
     return { ok: true };
   }, { auth: true });
-  r.get('/api/settings', ({ req, user }) => { requireAdmin(user); return { ...getSettings(db), your_ip: clientIp(req) }; }, { auth: true });
+  r.get('/api/settings', ({ req, user }) => { requireAdmin(user); return { ...getSettings(db), your_ip: clientIp(req), whatsapp: providerStatus() }; }, { auth: true });
+  r.get('/api/notifications', ({ user }) => {
+    requireAdmin(user);
+    return {
+      whatsapp: providerStatus(),
+      notifications: db.prepare(`SELECT n.id, n.to_phone, n.body, n.kind, n.status, n.error, n.created_at, n.sent_at, u.name AS user_name
+                                 FROM notifications n LEFT JOIN users u ON u.id = n.user_id ORDER BY n.id DESC LIMIT 100`).all(),
+    };
+  }, { auth: true });
+  r.post('/api/notifications/test', async ({ req, user }) => {
+    requireAdmin(user);
+    const b = parseJson(await readBody(req));
+    const to = normalizePhone(b.to || getSettings(db).notify.manager_phone);
+    if (!to) throw new HttpError(400, 'اكتب رقم جوال المدير في إعدادات الإشعارات أولاً');
+    if (!providerStatus().configured) throw new HttpError(400, 'أضف بيانات مزوّد واتساب في متغيرات Railway أولاً (WHATSAPP_API_URL و WHATSAPP_TOKEN)');
+    const body = b.kind === 'summary' ? dailySummary(db, localDate(), loadAttendance(db, { from: localDate(), to: localDate() })) : 'وريف | رسالة تجربة: إشعارات واتساب تعمل ✓';
+    queue(db, { to, body, kind: 'test' });
+    await flush(db);
+    const last = db.prepare("SELECT status, error FROM notifications WHERE kind = 'test' ORDER BY id DESC LIMIT 1").get();
+    if (last.status !== 'sent') throw new HttpError(502, `ما وصلت الرسالة: ${last.error || last.status}`);
+    return { ok: true };
+  }, { auth: true });
   r.put('/api/settings', async ({ req, user }) => {
     requireAdmin(user);
     const s = saveSettings(db, parseJson(await readBody(req)));
@@ -609,6 +654,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   if (boot) {
     console.log(`حساب المدير: ${boot.username}${boot.password ? ` / كلمة المرور المؤقتة: ${boot.password}` : ''}`);
   }
+  startNotifier(db);
   const backup = () => dailyBackup(db).catch((e) => console.error('backup failed', e));
   backup();
   setInterval(backup, 6 * 3600_000).unref();

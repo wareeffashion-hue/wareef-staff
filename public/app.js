@@ -178,7 +178,7 @@ const PAGES = {};
 function route() {
   const items = navItems();
   const key = location.hash.replace(/^#\/?/, '').split('?')[0] || items[0][0];
-  const page = key === 'account' || items.some(([k]) => k === key) ? key : items[0][0];
+  const page = key === 'account' || (key === 'notifications' && ME.role === 'admin') || items.some(([k]) => k === key) ? key : items[0][0];
   clearInterval(window.__tick);
   app.innerHTML = `<div class="shell">
     <nav class="rail" aria-label="القائمة">
@@ -1009,9 +1009,9 @@ PAGES.staff = async () => {
   const pg = render(`
     <div class="topline"><h1>الموظفون</h1><button class="btn" id="addU" type="button">إضافة موظف</button></div>
     <section class="panel">
-      ${table(['الاسم', 'اسم المستخدم', 'الدخول', 'الراتب', 'الفترات', 'الإجازة الأسبوعية', 'الصلاحيات', 'الحالة', ''],
+      ${table(['الاسم', 'اسم المستخدم', 'الدخول', 'واتساب', 'الراتب', 'الفترات', 'الإجازة الأسبوعية', 'الصلاحيات', 'الحالة', ''],
         d.users.map((u) => `<tr><td><b>${esc(u.name)}</b>${u.role === 'admin' ? ` ${pill('مدير', 'info')}` : ''}</td><td dir="ltr">${esc(u.username)}</td>
-          <td>${u.has_password ? pill('مفعّل', 'good') : pill('بدون كلمة مرور', 'warn')}</td><td>${u.role === 'admin' ? '—' : money(u.salary)}</td>
+          <td>${u.has_password ? pill('مفعّل', 'good') : pill('بدون كلمة مرور', 'warn')}</td><td dir="ltr" class="small">${u.role === 'admin' ? '—' : (u.phone ? esc(u.phone) : '<span class="muted">—</span>')}</td><td>${u.role === 'admin' ? '—' : money(u.salary)}</td>
           <td class="wrap">${u.role === 'admin' ? '—' : esc(periodName(u.periods))}</td><td>${u.day_off === null ? 'لا يوجد' : DAYS[u.day_off]}</td>
           <td class="wrap small">${u.role === 'admin' ? 'كل شيء' : (u.perms.map((k) => esc(permName(k))).join('، ') || '—')}</td><td>${u.active ? pill('نشط', 'good') : pill('موقوف', '')}</td>
           <td><button class="btn sm ghost" data-e="${u.id}">تعديل</button></td></tr>`))}
@@ -1022,6 +1022,7 @@ PAGES.staff = async () => {
       <label class="f">اسم المستخدم (إنجليزي)<input name="username" id="u-username" dir="ltr" value="${esc(u?.username || '')}" autocapitalize="none" required></label></div>
       <div class="row"><label class="f">${u?.has_password ? 'كلمة مرور جديدة (اتركها فارغة للإبقاء)' : 'كلمة المرور'}<input name="password" id="u-pass" dir="ltr" autocomplete="new-password" minlength="6" ${u ? '' : 'required'}></label>
       ${u?.role === 'admin' ? '' : `<label class="f">الراتب الشهري (ر.س)<input type="number" min="0" step="0.01" name="salary" id="u-salary" value="${u?.salary || ''}"></label>`}</div>
+      ${u?.role === 'admin' ? '' : `<label class="f">جوال واتساب (للإشعارات)<input name="phone" id="u-phone" dir="ltr" inputmode="tel" placeholder="05xxxxxxxx" value="${esc(u?.phone || '')}"></label>`}
       ${u?.role === 'admin' ? '' : `
       <fieldset style="border:1px solid var(--line);border-radius:8px;padding:10px 14px"><legend class="small">فترات الدوام</legend>
         <div class="row">${d.periods.map((p) => `<label class="check"><input type="checkbox" name="p_${p.id}" id="u-p-${p.id}" ${!u?.periods || u.periods.includes(p.id) ? 'checked' : ''}>${esc(p.name)}</label>`).join('')}</div></fieldset>
@@ -1035,7 +1036,7 @@ PAGES.staff = async () => {
       const f = formData(e.target);
       const body = { name: f.name, username: f.username, ...(f.password ? { password: f.password } : {}) };
       if (u?.role !== 'admin') {
-        Object.assign(body, { salary: f.salary || 0, day_off: f.day_off, perms: d.permissions.filter((p) => f[`perm_${p.key}`]).map((p) => p.key), periods: d.periods.filter((p) => f[`p_${p.id}`]).map((p) => p.id) });
+        Object.assign(body, { salary: f.salary || 0, phone: f.phone || '', day_off: f.day_off, perms: d.permissions.filter((p) => f[`perm_${p.key}`]).map((p) => p.key), periods: d.periods.filter((p) => f[`p_${p.id}`]).map((p) => p.id) });
         if (body.periods.length === d.periods.length) body.periods = null;
         if (u) body.active = f.active;
       }
@@ -1088,6 +1089,19 @@ PAGES.reports = async () => {
   sync();
 };
 
+// ------------------------------------------------------------------ manager: notifications log
+const NS = { pending: ['بالانتظار', 'warn'], sent: ['أُرسلت', 'good'], failed: ['فشلت', 'bad'], skipped: ['لم تُرسل: المزوّد غير مضبوط', ''] };
+PAGES.notifications = async () => {
+  const d = await api('/api/notifications');
+  render(`
+    <div class="topline"><h1>سجل إشعارات واتساب</h1><a class="link" href="#/settings">إعدادات الإشعارات</a></div>
+    <section class="panel">
+      ${table(['الوقت', 'إلى', 'الموظف', 'الرسالة', 'الحالة'], d.notifications.map((n) => `<tr><td>${fmtDate(new Date(n.created_at + tz * 60000).toISOString().slice(0, 10))} ${fmtT(n.created_at)}</td>
+        <td dir="ltr" class="small">${esc(n.to_phone)}</td><td>${esc(n.user_name || 'المدير')}</td><td class="wrap small" style="white-space:pre-wrap;min-width:260px">${esc(n.body)}</td>
+        <td>${pill(...(NS[n.status] || [n.status, '']))}${n.error && n.status !== 'skipped' ? `<div class="muted small">${esc(n.error)}</div>` : ''}</td></tr>`), { empty: 'لا توجد إشعارات بعد' })}
+    </section>`);
+};
+
 // ------------------------------------------------------------------ manager: settings
 PAGES.settings = async () => {
   const s = await api('/api/settings');
@@ -1117,6 +1131,22 @@ PAGES.settings = async () => {
       <label class="check"><input type="checkbox" id="s-req" ${s.security.require_geo ? 'checked' : ''}>إلزام الموظف بتفعيل الموقع عند البصمة</label>
       <label class="f" style="max-width:320px">أقصى فرق مقبول في ساعة الجوال (دقائق)<input type="number" id="s-skew" min="1" max="120" value="${s.security.max_clock_skew_minutes}"></label>
     </section>
+    <section class="panel"><header><h2>إشعارات واتساب</h2>${s.whatsapp.configured ? pill('المزوّد متصل', 'good') : pill('المزوّد غير مضبوط', 'warn')}</header>
+      ${s.whatsapp.configured ? '' : '<p class="muted small">أضف بيانات مزوّد واتساب في متغيرات Railway (رابط الإرسال <b dir="ltr">WHATSAPP_API_URL</b> والرمز <b dir="ltr">WHATSAPP_TOKEN</b>)، ثم أعد النشر. إلى ذلك الحين تُحفظ الإشعارات في السجل ولا تُرسل.</p>'}
+      <div class="row">
+        <label class="f">جوال المدير (تصله التنبيهات والملخص)<input id="n-phone" dir="ltr" inputmode="tel" placeholder="05xxxxxxxx" value="${esc(s.notify.manager_phone)}"></label>
+        <label class="f">وقت الملخص اليومي<input type="time" id="n-time" value="${s.notify.summary_time}"></label>
+        <label class="f">تذكير الموظف بعد بداية الدوام بـ (دقائق)<input type="number" id="n-after" min="1" max="120" value="${s.notify.remind_after_minutes}"></label>
+      </div>
+      <div style="display:grid;gap:8px">
+        <label class="check"><input type="checkbox" id="n-staff" ${s.notify.remind_staff ? 'checked' : ''}>تذكير الموظف إذا ما سجّل حضور، أو نسي يسجّل انصراف</label>
+        <label class="check"><input type="checkbox" id="n-mgr" ${s.notify.alert_manager ? 'checked' : ''}>تنبيهات للمدير: تأخير، غياب، بصمة مشبوهة، خروج مؤقت، طلب فسح أو نواقص، تذكرة جديدة</label>
+        <label class="check"><input type="checkbox" id="n-acc" ${s.notify.staff_account ? 'checked' : ''}>إشعار الموظف عن حسابه: خصم، سلفة أو سداد، رد على تذكرته، قرار على طلبه</label>
+        <label class="check"><input type="checkbox" id="n-sum" ${s.notify.daily_summary ? 'checked' : ''}>ملخص يومي للمدير: الحضور والتأخير والغياب، الطلبات حسب القناة، الأرقام اليومية، وما لم يُسجَّل</label>
+      </div>
+      <div class="row"><button type="button" class="btn ghost" id="n-test" style="flex:0 0 auto">إرسال رسالة تجربة لجوالي</button><button type="button" class="btn ghost" id="n-test-sum" style="flex:0 0 auto">أرسل ملخص اليوم الآن</button><a class="link" href="#/notifications" style="flex:0 0 auto;align-self:center">سجل الإشعارات</a></div>
+      <p class="muted small">أرقام الموظفين تُضاف من صفحة الموظفين. احفظ الإعدادات قبل التجربة.</p>
+    </section>
     <section class="panel"><header><h2>الأرقام اليومية</h2><span class="muted small">البنود اللي يسجّلها الموظفون يومياً. حدّد من يسجّل كل بند من صفحة الموظفين</span></header>
       <div id="mts">${(s.metrics || []).map(mtRow).join('')}</div>
       <button type="button" class="link" id="addMt">+ إضافة بند</button>
@@ -1130,6 +1160,8 @@ PAGES.settings = async () => {
     if (e.target.matches('[data-rm]')) e.target.closest('.per').remove();
     if (e.target.matches('[data-addp]')) e.target.previousElementSibling.insertAdjacentHTML('beforeend', perRow({ id: '', name: '', start: '09:00', end: '17:00' }));
   });
+  $('#n-test', pg).onclick = (e) => act(e.target, () => api('/api/notifications/test', { method: 'POST', body: {} }), 'وصلت رسالة التجربة لجوالك');
+  $('#n-test-sum', pg).onclick = (e) => act(e.target, () => api('/api/notifications/test', { method: 'POST', body: { kind: 'summary' } }), 'تم إرسال ملخص اليوم');
   $('#addMt', pg).onclick = () => $('#mts', pg).insertAdjacentHTML('beforeend', mtRow({ key: '', name: '', note: false }));
   $('#addCh', pg).onclick = () => $('#chs', pg).insertAdjacentHTML('beforeend', chRow({ key: '', name: '' }));
   $('#s-here', pg).onclick = async (e) => {
@@ -1160,6 +1192,10 @@ PAGES.settings = async () => {
       },
       channels: $$('#chs .per', pg).map((r) => ({ key: field(r, 'key'), name: field(r, 'name') })),
       metrics: $$('#mts .per', pg).map((r) => ({ key: field(r, 'key'), name: field(r, 'name'), note: $('[name=note]', r).checked })),
+      notify: {
+        manager_phone: $('#n-phone', pg).value.trim(), summary_time: $('#n-time', pg).value, remind_after_minutes: $('#n-after', pg).value,
+        remind_staff: $('#n-staff', pg).checked, alert_manager: $('#n-mgr', pg).checked, staff_account: $('#n-acc', pg).checked, daily_summary: $('#n-sum', pg).checked,
+      },
     };
     if (await act(e.target, () => api('/api/settings', { method: 'PUT', body }), 'تم حفظ الإعدادات')) { staffCache = null; boot(); }
   };

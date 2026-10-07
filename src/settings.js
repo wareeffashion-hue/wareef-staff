@@ -33,6 +33,15 @@ export const DEFAULTS = {
     { key: 'pending_issues', name: 'الإشكاليات المعلّقة', note: true },
     { key: 'pending_chats', name: 'دردشات معلّقة بدون رد', note: false },
   ],
+  notify: {
+    manager_phone: '',
+    remind_staff: true,          // remind employees to punch in / out
+    remind_after_minutes: 10,
+    alert_manager: true,         // lateness, absence, suspicious punches, new requests and tickets
+    staff_account: true,         // tell employees about deductions, loans, replies, request decisions
+    daily_summary: true,
+    summary_time: '21:30',
+  },
   channels: [
     { key: 'salla', name: 'سلة' },
     { key: 'tabby', name: 'تابي' },
@@ -45,7 +54,9 @@ export const DEFAULTS = {
 export function getSettings(db) {
   const out = structuredClone(DEFAULTS);
   for (const { key, value } of db.prepare('SELECT key, value FROM settings').all()) {
-    if (key in out) out[key] = JSON.parse(value);
+    if (!(key in out)) continue;
+    const v = JSON.parse(value);
+    out[key] = v && typeof v === 'object' && !Array.isArray(v) && key === 'notify' ? { ...out[key], ...v } : v;
   }
   return out;
 }
@@ -96,6 +107,21 @@ export function saveSettings(db, patch) {
       name: String(c.name || '').trim().slice(0, 40),
     })).filter((c) => /^[a-z0-9_]+$/.test(c.key) && c.name && !seen.has(c.key) && seen.add(c.key));
     if (!next.channels.length) throw new HttpError(400, 'أضف قناة طلبات واحدة على الأقل');
+  }
+  if ('notify' in patch) {
+    const n = patch.notify || {};
+    const phone = String(n.manager_phone || '').replace(/\D/g, '');
+    if (phone && !/^\d{9,15}$/.test(phone)) throw new HttpError(400, 'رقم جوال المدير غير صحيح');
+    if (n.summary_time && !HHMM.test(n.summary_time)) throw new HttpError(400, 'وقت الملخص اليومي غير صحيح');
+    next.notify = {
+      manager_phone: phone,
+      remind_staff: !!n.remind_staff,
+      remind_after_minutes: clampInt(n.remind_after_minutes ?? 10, 1, 120),
+      alert_manager: !!n.alert_manager,
+      staff_account: !!n.staff_account,
+      daily_summary: !!n.daily_summary,
+      summary_time: n.summary_time || '21:30',
+    };
   }
   if ('metrics' in patch) {
     const seen = new Set();
