@@ -252,18 +252,22 @@ function route() {
       ${items.map(([k, label, ic]) => `<a href="#/${k}" class="${k === page ? 'on' : ''}">${icon(ic)}${label}</a>`).join('')}
       <div class="foot">${ME.role === 'admin' ? `<a href="#/account">${icon('user')}حسابي</a>` : ''}<a href="#" id="logout">${icon('out')}تسجيل الخروج</a></div>
     </nav>
-    <main class="main" id="page"><div class="mobile-head"><img src="/img/logo-mark.png" alt="وريف"><span class="muted small">${esc(ME.name)}</span></div><p class="muted">جاري التحميل...</p></main>
+    <main class="main" id="page"><div class="mobile-head"><img src="/img/logo-mark.png" alt="وريف"><div class="mh-tools"><a href="#/account" class="mh-me">${icon('user')}${esc(ME.name)}</a><button type="button" class="mh-out" data-logout aria-label="تسجيل الخروج" title="تسجيل الخروج">${icon('out')}</button></div></div><p class="muted">جاري التحميل...</p></main>
     <nav class="tabbar" aria-label="القائمة">${items.map(([k, label, ic]) => `<a href="#/${k}" class="${k === page ? 'on' : ''}">${icon(ic)}${label}</a>`).join('')}</nav>
   </div>`;
-  $('#logout').onclick = async (e) => {
-    e.preventDefault();
-    await api('/api/logout', { method: 'POST' }).catch(() => {});
-    ME = null;
-    renderLogin();
-  };
+  $('#logout').onclick = (e) => { e.preventDefault(); logout(); };
   const fn = PAGES[page] || PAGES.account;
   fn().catch((e) => { $('#page').innerHTML = `<div class="panel"><p>${esc(e.message)}</p></div>`; });
 }
+
+async function logout() {
+  if (!confirm('تسجيل الخروج من النظام؟')) return;
+  await api('/api/logout', { method: 'POST' }).catch(() => {});
+  ME = null;
+  renderLogin();
+}
+// the phone header and the account page carry their own logout buttons
+document.addEventListener('click', (e) => { if (e.target.closest('[data-logout]')) { e.preventDefault(); logout(); } });
 
 /** Write the page body (keeps the phone header). */
 function render(html) {
@@ -457,7 +461,8 @@ PAGES.account = async () => {
       <p class="muted small">منبّهات الدوام وكل إشعارات النظام تطلع على شاشة هذا الجوال مباشرة بصوت واهتزاز، حتى لو كان مقفل. فعّلها على كل جوال تستخدمه.</p>
       <div class="row"><button class="btn" type="button" id="p-on">تفعيل على هذا الجوال</button><button class="btn ghost" type="button" id="p-test">إرسال تنبيه تجربة</button><button class="link bad" type="button" id="p-off">إيقاف</button></div>
       ${PUSH.ios() && !PUSH.standalone() ? '<p class="muted small">على الآيفون: من Safari اضغط مشاركة ← «إضافة إلى الشاشة الرئيسية»، وافتح النظام من الأيقونة الجديدة، ثم فعّل من هنا.</p>' : ''}
-    </section>`);
+    </section>
+    <div style="max-width:520px"><button class="btn ghost" type="button" data-logout style="width:100%">${icon('out')}تسجيل الخروج</button></div>`);
   const ps = $('#ps', pg);
   const showState = async () => { const sub = await PUSH.sub().catch(() => null); ps.innerHTML = sub && Notification.permission === 'granted' ? pill('مفعّلة', 'good') : pill('غير مفعّلة', 'warn'); };
   showState();
