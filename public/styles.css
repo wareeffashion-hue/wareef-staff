@@ -297,3 +297,9 @@ body::after { content: ""; position: fixed; inset: 0; z-index: 0; pointer-events
 .strip .ex { top: 9px; bottom: 9px; background: repeating-linear-gradient(90deg, var(--bad) 0 3px, transparent 3px 6px); }
 .strip .nw { width: 2px; background: var(--teal); box-shadow: 0 0 10px var(--teal); }
 .strip-axis { display: flex; justify-content: space-between; font-size: .68rem; color: var(--muted); margin-top: 2px; font-variant-numeric: tabular-nums; }
+
+/* ---------- WhatsApp link */
+.wa-link .qr-wrap { display: flex; flex-wrap: wrap; gap: 20px; align-items: center; }
+.wa-link .qr { width: 220px; max-width: 100%; padding: 10px; background: #fff; border-radius: 14px; border: 1px solid var(--line); box-shadow: var(--shadow); }
+.wa-link .qr svg { display: block; width: 100%; height: auto; }
+.wa-link ol { margin: 0; padding-inline-start: 20px; display: grid; gap: 6px; flex: 1 1 240px; }

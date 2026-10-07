@@ -1,7 +1,8 @@
 // WhatsApp notifications: a queue in the database, a sender that talks to the provider, and a
 // once-a-minute scheduler for reminders and the daily summary.
 //
-// Provider credentials live in environment variables, never in the database:
+// Default: a WhatsApp account linked directly by scanning a QR code from the settings page (see wa.js).
+// Alternatively an external gateway, whose credentials live in environment variables, never in the database:
 //   UltraMsg:  WHATSAPP_PROVIDER=ultramsg  WHATSAPP_INSTANCE_ID=instance123  WHATSAPP_TOKEN=...
 //   Any other HTTP API (most Arabic WhatsApp gateways):
 //     WHATSAPP_PROVIDER=custom
@@ -17,13 +18,15 @@ import { localDate, localTime, at } from './time.js';
 import { getSettings } from './settings.js';
 import { loadAttendance } from './attendance.js';
 import { opsRows } from './reports.js';
+import { waConnected, waSend, waStatus } from './wa.js';
 
 const env = process.env;
 
 export function providerStatus() {
-  const p = (env.WHATSAPP_PROVIDER || (env.WHATSAPP_API_URL ? 'custom' : 'ultramsg')).toLowerCase();
+  const p = (env.WHATSAPP_PROVIDER || (env.WHATSAPP_API_URL ? 'custom' : env.WHATSAPP_INSTANCE_ID ? 'ultramsg' : 'qr')).toLowerCase();
   if (p === 'custom' || p === 'webhook') return { provider: 'custom', configured: !!((env.WHATSAPP_API_URL || env.WHATSAPP_WEBHOOK_URL) && (env.WHATSAPP_TOKEN || env.WHATSAPP_AUTH === 'none')) };
-  return { provider: 'ultramsg', configured: !!(env.WHATSAPP_INSTANCE_ID && env.WHATSAPP_TOKEN) };
+  if (p === 'ultramsg') return { provider: 'ultramsg', configured: !!(env.WHATSAPP_INSTANCE_ID && env.WHATSAPP_TOKEN) };
+  return { provider: 'qr', configured: waConnected(), link: waStatus() };
 }
 
 /** Builds the HTTP request for a generic gateway from the WHATSAPP_* variables. */
@@ -57,6 +60,7 @@ export function normalizePhone(raw) {
 
 async function deliver(to, body) {
   const { provider, configured } = providerStatus();
+  if (provider === 'qr') return waSend(to, body);
   if (!configured) throw Object.assign(new Error('مزوّد واتساب غير مضبوط'), { skip: true });
   const ctrl = AbortSignal.timeout(15_000);
   let res;
@@ -110,6 +114,9 @@ export async function flush(db, send = deliver) {
   sending = true;
   let sent = 0;
   try {
+    // Reminders lose their point after a while; don't flood people when the link comes back.
+    db.prepare("UPDATE notifications SET status = 'skipped', error = 'انتهت صلاحية الرسالة قبل إرسالها' WHERE status = 'pending' AND created_at < ?")
+      .run(Date.now() - 6 * 60 * MIN);
     const rows = db.prepare("SELECT * FROM notifications WHERE status = 'pending' AND attempts < 3 ORDER BY id LIMIT 20").all();
     for (const n of rows) {
       try {
@@ -117,6 +124,7 @@ export async function flush(db, send = deliver) {
         db.prepare("UPDATE notifications SET status = 'sent', sent_at = ?, attempts = attempts + 1, error = NULL WHERE id = ?").run(Date.now(), n.id);
         sent++;
       } catch (e) {
+        if (e.defer) break; // link temporarily down: leave the queue untouched and try again later
         const status = e.skip ? 'skipped' : n.attempts + 1 >= 3 ? 'failed' : 'pending';
         db.prepare('UPDATE notifications SET status = ?, attempts = attempts + 1, error = ? WHERE id = ?').run(status, String(e.message).slice(0, 300), n.id);
       }
@@ -135,8 +143,28 @@ export function tick(db, now = Date.now()) {
   const date = localDate(now);
   const rows = loadAttendance(db, { from: date, to: date, now });
   const after = (n.remind_after_minutes || 10) * MIN;
+  const before = (n.alert_before_minutes || 10) * MIN;
+  const within = (t) => now >= t && now < t + 5 * MIN; // fire once, only close to the moment
   for (const r of rows) {
     if (r.status === 'excused' || r.status === 'holiday' || r.status === 'off') continue;
+    if (n.shift_alerts) {
+      const to = phoneOf(db, r.userId);
+      r.periods.forEach((p, i) => {
+        const start = at(date, p.start);
+        const end = at(date, p.end);
+        const next = r.periods[i + 1];
+        if (within(start - before) && !p.firstIn) {
+          queue(db, { to, userId: r.userId, kind: 'alarm_start', key: `alarm_start:${r.userId}:${date}:${p.id}`,
+            body: `⏰ وريف | ${r.name}، ${p.name} تبدأ الساعة ${p.start}. لا تنسَ تسجيل الحضور أول ما توصل.` });
+        }
+        if (within(end)) {
+          queue(db, { to, userId: r.userId, kind: next ? 'alarm_break' : 'alarm_end', key: `alarm_end:${r.userId}:${date}:${p.id}`,
+            body: next
+              ? `⏰ وريف | انتهت ${p.name}. وقت الاستراحة: سجّل الانصراف الآن، والفترة القادمة تبدأ الساعة ${next.start}.`
+              : `⏰ وريف | انتهى دوامك اليوم الساعة ${p.end}. سجّل الانصراف قبل ما تطلع. يعطيك العافية.` });
+        }
+      });
+    }
     for (const p of r.periods) {
       const start = at(date, p.start);
       const end = at(date, p.end);

@@ -37,6 +37,8 @@ export const DEFAULTS = {
     manager_phone: '',
     remind_staff: true,          // remind employees to punch in / out
     remind_after_minutes: 10,
+    shift_alerts: true,          // alarms before each period starts and when it ends (break / end of day)
+    alert_before_minutes: 10,
     alert_manager: true,         // lateness, absence, suspicious punches, new requests and tickets
     staff_account: true,         // tell employees about deductions, loans, replies, request decisions
     daily_summary: true,
@@ -117,6 +119,8 @@ export function saveSettings(db, patch) {
       manager_phone: phone,
       remind_staff: !!n.remind_staff,
       remind_after_minutes: clampInt(n.remind_after_minutes ?? 10, 1, 120),
+      shift_alerts: !!n.shift_alerts,
+      alert_before_minutes: clampInt(n.alert_before_minutes ?? 10, 1, 120),
       alert_manager: !!n.alert_manager,
       staff_account: !!n.staff_account,
       daily_summary: !!n.daily_summary,

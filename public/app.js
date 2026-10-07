@@ -1089,6 +1089,47 @@ PAGES.reports = async () => {
   sync();
 };
 
+/** The WhatsApp link box: shows the QR while waiting for a scan, then the linked number. */
+function waPanel(pg) {
+  const box = $('#wa-link', pg);
+  const pillEl = $('#wa-pill', pg);
+  let timer = null;
+  const draw = (w) => {
+    if (!box.isConnected) { clearInterval(timer); return; }
+    if (w.provider !== 'qr') {
+      pillEl.innerHTML = pill('مزوّد خارجي', 'info');
+      box.innerHTML = '<p class="muted small">الإرسال عبر مزوّد خارجي مضبوط في متغيرات Railway.</p>';
+      return;
+    }
+    const states = { connected: ['واتساب مربوط', 'good'], qr: ['بانتظار مسح الرمز', 'warn'], connecting: ['جاري الاتصال...', 'info'], off: ['غير مربوط', 'bad'] };
+    pillEl.innerHTML = pill(...(states[w.status] || states.off));
+    if (w.status === 'connected') {
+      box.innerHTML = `<div class="row" style="align-items:center"><p style="flex:1 1 260px">الرسائل تُرسل من الرقم <b dir="ltr">+${esc(w.me || '')}</b>.</p><button type="button" class="btn ghost" id="wa-out" style="flex:0 0 auto">فصل الحساب</button></div>`;
+      $('#wa-out', box).onclick = async (e) => {
+        if (!e.target.dataset.armed) { e.target.dataset.armed = '1'; e.target.textContent = 'تأكيد الفصل؟'; return; }
+        const r = await act(e.target, () => api('/api/whatsapp/logout', { method: 'POST' }), 'تم فصل الحساب');
+        if (r) poll();
+      };
+    } else if (w.status === 'qr' && w.qr) {
+      box.innerHTML = `<div class="qr-wrap"><div class="qr">${w.qr}</div><ol class="small">
+        <li>افتح واتساب في الجوال اللي تبي الرسائل تطلع منه.</li>
+        <li>اضغط <b>الإعدادات</b> ← <b>الأجهزة المرتبطة</b> ← <b>ربط جهاز</b>.</li>
+        <li>وجّه الكاميرا على الرمز. يتجدد الرمز تلقائياً كل دقيقة تقريباً.</li>
+        <li class="muted">ننصح برقم مخصّص للنظام، مو رقمك الشخصي.</li></ol></div>`;
+    } else if (w.status === 'connecting') {
+      box.innerHTML = '<p class="muted">جاري الاتصال بواتساب...</p>';
+    } else {
+      box.innerHTML = `<div class="row" style="align-items:center"><p style="flex:1 1 260px">اربط حساب واتساب بمسح رمز QR، والنظام يرسل منه الإشعارات والمنبهات.${w.error ? `<br><span class="muted small">${esc(w.error)}</span>` : ''}</p><button type="button" class="btn" id="wa-in" style="flex:0 0 auto">ربط حساب واتساب</button></div>`;
+      $('#wa-in', box).onclick = async (e) => { if (await act(e.target, () => api('/api/whatsapp/connect', { method: 'POST' }))) poll(); };
+    }
+  };
+  const poll = async () => {
+    try { draw(await api('/api/whatsapp')); } catch { /* keep the last state */ }
+  };
+  poll();
+  timer = setInterval(poll, 3000);
+}
+
 // ------------------------------------------------------------------ manager: notifications log
 const NS = { pending: ['بالانتظار', 'warn'], sent: ['أُرسلت', 'good'], failed: ['فشلت', 'bad'], skipped: ['لم تُرسل: المزوّد غير مضبوط', ''] };
 PAGES.notifications = async () => {
@@ -1131,14 +1172,16 @@ PAGES.settings = async () => {
       <label class="check"><input type="checkbox" id="s-req" ${s.security.require_geo ? 'checked' : ''}>إلزام الموظف بتفعيل الموقع عند البصمة</label>
       <label class="f" style="max-width:320px">أقصى فرق مقبول في ساعة الجوال (دقائق)<input type="number" id="s-skew" min="1" max="120" value="${s.security.max_clock_skew_minutes}"></label>
     </section>
-    <section class="panel"><header><h2>إشعارات واتساب</h2>${s.whatsapp.configured ? pill('المزوّد متصل', 'good') : pill('المزوّد غير مضبوط', 'warn')}</header>
-      ${s.whatsapp.configured ? '' : '<p class="muted small">أضف بيانات مزوّد واتساب في متغيرات Railway (رابط الإرسال <b dir="ltr">WHATSAPP_API_URL</b> والرمز <b dir="ltr">WHATSAPP_TOKEN</b>)، ثم أعد النشر. إلى ذلك الحين تُحفظ الإشعارات في السجل ولا تُرسل.</p>'}
+    <section class="panel"><header><h2>إشعارات واتساب</h2><span id="wa-pill"></span></header>
+      <div id="wa-link" class="wa-link"></div>
       <div class="row">
         <label class="f">جوال المدير (تصله التنبيهات والملخص)<input id="n-phone" dir="ltr" inputmode="tel" placeholder="05xxxxxxxx" value="${esc(s.notify.manager_phone)}"></label>
         <label class="f">وقت الملخص اليومي<input type="time" id="n-time" value="${s.notify.summary_time}"></label>
         <label class="f">تذكير الموظف بعد بداية الدوام بـ (دقائق)<input type="number" id="n-after" min="1" max="120" value="${s.notify.remind_after_minutes}"></label>
+        <label class="f">منبّه قبل بداية كل فترة بـ (دقائق)<input type="number" id="n-before" min="1" max="120" value="${s.notify.alert_before_minutes}"></label>
       </div>
       <div style="display:grid;gap:8px">
+        <label class="check"><input type="checkbox" id="n-alarm" ${s.notify.shift_alerts ? 'checked' : ''}>منبّه الفترات للموظف: قبل بداية كل فترة، وعند الاستراحة، وعند نهاية الدوام</label>
         <label class="check"><input type="checkbox" id="n-staff" ${s.notify.remind_staff ? 'checked' : ''}>تذكير الموظف إذا ما سجّل حضور، أو نسي يسجّل انصراف</label>
         <label class="check"><input type="checkbox" id="n-mgr" ${s.notify.alert_manager ? 'checked' : ''}>تنبيهات للمدير: تأخير، غياب، بصمة مشبوهة، خروج مؤقت، طلب فسح أو نواقص، تذكرة جديدة</label>
         <label class="check"><input type="checkbox" id="n-acc" ${s.notify.staff_account ? 'checked' : ''}>إشعار الموظف عن حسابه: خصم، سلفة أو سداد، رد على تذكرته، قرار على طلبه</label>
@@ -1160,6 +1203,7 @@ PAGES.settings = async () => {
     if (e.target.matches('[data-rm]')) e.target.closest('.per').remove();
     if (e.target.matches('[data-addp]')) e.target.previousElementSibling.insertAdjacentHTML('beforeend', perRow({ id: '', name: '', start: '09:00', end: '17:00' }));
   });
+  waPanel(pg);
   $('#n-test', pg).onclick = (e) => act(e.target, () => api('/api/notifications/test', { method: 'POST', body: {} }), 'وصلت رسالة التجربة لجوالك');
   $('#n-test-sum', pg).onclick = (e) => act(e.target, () => api('/api/notifications/test', { method: 'POST', body: { kind: 'summary' } }), 'تم إرسال ملخص اليوم');
   $('#addMt', pg).onclick = () => $('#mts', pg).insertAdjacentHTML('beforeend', mtRow({ key: '', name: '', note: false }));
@@ -1194,6 +1238,7 @@ PAGES.settings = async () => {
       metrics: $$('#mts .per', pg).map((r) => ({ key: field(r, 'key'), name: field(r, 'name'), note: $('[name=note]', r).checked })),
       notify: {
         manager_phone: $('#n-phone', pg).value.trim(), summary_time: $('#n-time', pg).value, remind_after_minutes: $('#n-after', pg).value,
+        shift_alerts: $('#n-alarm', pg).checked, alert_before_minutes: $('#n-before', pg).value,
         remind_staff: $('#n-staff', pg).checked, alert_manager: $('#n-mgr', pg).checked, staff_account: $('#n-acc', pg).checked, daily_summary: $('#n-sum', pg).checked,
       },
     };

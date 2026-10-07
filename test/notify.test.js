@@ -14,7 +14,7 @@ function setup() {
   bootstrap(db);
   db.prepare("UPDATE users SET phone = '966500000001', created_at = ? WHERE username = 'ali'").run(at('2026-09-01', '08:00'));
   db.prepare("UPDATE users SET created_at = ? WHERE role = 'employee' AND username != 'ali'").run(at('2026-09-01', '08:00'));
-  saveSettings(db, { notify: { manager_phone: '0500000009', remind_staff: true, remind_after_minutes: 10, alert_manager: true, staff_account: true, daily_summary: true, summary_time: '21:30' } });
+  saveSettings(db, { notify: { manager_phone: '0500000009', remind_staff: true, remind_after_minutes: 10, shift_alerts: true, alert_before_minutes: 10, alert_manager: true, staff_account: true, daily_summary: true, summary_time: '21:30' } });
   return db;
 }
 const all = (db) => db.prepare('SELECT * FROM notifications ORDER BY id').all();
@@ -30,7 +30,7 @@ test('phone numbers are normalised to international format', () => {
 test('punch-in reminder goes once to the employee and an alert to the manager', () => {
   const db = setup();
   tick(db, at(SAT, '07:05'));
-  assert.equal(all(db).length, 0, 'nothing before the reminder delay');
+  assert.equal(all(db).filter((x) => x.kind !== 'alarm_start').length, 0, 'nothing but alarms before the reminder delay');
   tick(db, at(SAT, '07:11'));
   tick(db, at(SAT, '07:12'));
   const n = all(db);
@@ -111,4 +111,26 @@ test('custom gateway request is built from environment variables', () => {
   const c = customRequest('966500000001', 'hi', { WHATSAPP_API_URL: 'https://gw.example/send', WHATSAPP_TOKEN: 'T', WHATSAPP_AUTH: 'header:X-Api-Key', WHATSAPP_FORMAT: 'form' });
   assert.equal(c.init.headers['X-Api-Key'], 'T');
   assert.equal(c.init.body.get('phone'), '966500000001');
+});
+
+test('shift alarms: before start, at break, at end of day, each once', () => {
+  const db = setup();
+  const alarms = () => all(db).filter((x) => x.kind.startsWith('alarm') && x.to_phone === '966500000001');
+  tick(db, at(SAT, '06:49'));
+  assert.equal(alarms().length, 0);
+  tick(db, at(SAT, '06:50'));
+  tick(db, at(SAT, '06:51'));
+  assert.equal(alarms().length, 1);
+  assert.match(alarms()[0].body, /تبدأ الساعة 07:00/);
+  tick(db, at(SAT, '12:20'));
+  assert.match(alarms().at(-1).body, /وقت الاستراحة.*13:00/);
+  tick(db, at(SAT, '12:50'));
+  assert.match(alarms().at(-1).body, /المسائية تبدأ الساعة 13:00/);
+  tick(db, at(SAT, '21:00'));
+  assert.match(alarms().at(-1).body, /انتهى دوامك/);
+  assert.equal(alarms().length, 4);
+  // a server that comes back late does not send stale alarms
+  const db2 = setup();
+  tick(db2, at(SAT, '12:40'));
+  assert.equal(all(db2).filter((x) => x.kind === 'alarm_start' && x.body.includes('07:00')).length, 0);
 });

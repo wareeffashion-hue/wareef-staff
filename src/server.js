@@ -19,6 +19,7 @@ import {
   opsRows, opsSection, payroll, payrollSection, punchesSection, requestRows, requestsSection, stockRows, stockSection, ticketRows, ticketsSection, toCsv,
 } from './reports.js';
 import { renderDailyReport } from './print.js';
+import { waAutoStart, waLogout, waQrSvg, waStart, waStatus } from './wa.js';
 import { flush, normalizePhone, notifyEmployee, notifyManager, providerStatus, queue, startNotifier, dailySummary } from './notify.js';
 
 const PUBLIC_DIR = fileURLToPath(new URL('../public/', import.meta.url));
@@ -521,12 +522,30 @@ export function createApp(db) {
                                  FROM notifications n LEFT JOIN users u ON u.id = n.user_id ORDER BY n.id DESC LIMIT 100`).all(),
     };
   }, { auth: true });
+  // Direct WhatsApp link: start, poll for the QR / status, unlink.
+  r.get('/api/whatsapp', async ({ user }) => {
+    requireAdmin(user);
+    return { ...waStatus(), provider: providerStatus().provider, qr: await waQrSvg() };
+  }, { auth: true });
+  r.post('/api/whatsapp/connect', async ({ user }) => {
+    requireAdmin(user);
+    if (providerStatus().provider !== 'qr') throw new HttpError(400, 'النظام مضبوط على مزوّد خارجي من متغيرات Railway. احذف متغيرات WHATSAPP_ لاستخدام الربط بالـ QR');
+    await waStart();
+    audit(db, user.id, 'whatsapp.connect', null, '');
+    return waStatus();
+  }, { auth: true });
+  r.post('/api/whatsapp/logout', async ({ user }) => {
+    requireAdmin(user);
+    await waLogout();
+    audit(db, user.id, 'whatsapp.logout', null, '');
+    return waStatus();
+  }, { auth: true });
   r.post('/api/notifications/test', async ({ req, user }) => {
     requireAdmin(user);
     const b = parseJson(await readBody(req));
     const to = normalizePhone(b.to || getSettings(db).notify.manager_phone);
     if (!to) throw new HttpError(400, 'اكتب رقم جوال المدير في إعدادات الإشعارات أولاً');
-    if (!providerStatus().configured) throw new HttpError(400, 'أضف بيانات مزوّد واتساب في متغيرات Railway أولاً (WHATSAPP_API_URL و WHATSAPP_TOKEN)');
+    if (!providerStatus().configured) throw new HttpError(400, 'اربط حساب واتساب أولاً بمسح رمز QR من إعدادات الإشعارات');
     const body = b.kind === 'summary' ? dailySummary(db, localDate(), loadAttendance(db, { from: localDate(), to: localDate() })) : 'وريف | رسالة تجربة: إشعارات واتساب تعمل ✓';
     queue(db, { to, body, kind: 'test' });
     await flush(db);
@@ -655,6 +674,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
     console.log(`حساب المدير: ${boot.username}${boot.password ? ` / كلمة المرور المؤقتة: ${boot.password}` : ''}`);
   }
   startNotifier(db);
+  waAutoStart();
   const backup = () => dailyBackup(db).catch((e) => console.error('backup failed', e));
   backup();
   setInterval(backup, 6 * 3600_000).unref();

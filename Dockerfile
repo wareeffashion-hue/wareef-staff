@@ -1,7 +1,8 @@
 FROM node:22-alpine
 WORKDIR /app
 ENV NODE_ENV=production PORT=3000 DB_PATH=/data/staff.db SECURE_COOKIES=1 TZ_OFFSET=+03:00
-COPY package.json ./
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev --no-audit --no-fund
 COPY src ./src
 COPY public ./public
 # Runs as root: Railway mounts volumes owned by root, so a non-root user can't write /data.
