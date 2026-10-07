@@ -48,6 +48,7 @@ export const DEFAULTS = {
     daily_summary: true,
     summary_time: '21:30',
     summary_pdf: true,           // the daily summary arrives as the full daily report in PDF
+    push: true,                  // the same alerts as phone notifications (Web Push)
     alert_all: true,             // the manager hears about every action: punches, entries, tickets, replies...
     monthly_auto: true,          // on the 1st: monthly report to the manager, employee of the month to everyone
     daily_backup: true,          // a copy of the database to the manager's WhatsApp every night
@@ -136,6 +137,7 @@ export function saveSettings(db, patch) {
       daily_summary: !!n.daily_summary,
       summary_time: n.summary_time || '21:30',
       summary_pdf: !!(n.summary_pdf ?? true),
+      push: !!(n.push ?? true),
       alert_all: !!(n.alert_all ?? true),
       monthly_auto: !!(n.monthly_auto ?? true),
       daily_backup: !!(n.daily_backup ?? true),

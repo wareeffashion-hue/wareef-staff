@@ -25,6 +25,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { waConnected, waSend, waSendDocument, waStatus } from './wa.js';
 import * as msg from './messages.js';
+import { pushTo } from './push.js';
 
 const env = process.env;
 
@@ -116,6 +117,11 @@ async function deliver(to, body, n = null, db = null) {
  * so reminders don't repeat every minute.
  */
 export function queue(db, { to, body, kind, key = null, userId = null }) {
+  // the same alert on the phone's lock screen (employee's devices, or the managers' when it goes to the manager number)
+  try {
+    if (userId) pushTo(db, { userId, kind, body, key });
+    else if (to && normalizePhone(to) && normalizePhone(to) === normalizePhone(getSettings(db).notify.manager_phone)) pushTo(db, { kind, body, key });
+  } catch (e) { console.error('push', e.message); }
   const phone = normalizePhone(to);
   if (!phone || !body) return false;
   const r = db.prepare(`INSERT OR IGNORE INTO notifications (to_phone, body, kind, dedupe_key, user_id, status, attempts, created_at)

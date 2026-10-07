@@ -129,6 +129,31 @@ const ICONS = {
 };
 const icon = (n) => `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true">${ICONS[n]}</svg>`;
 
+// ------------------------------------------------------------------ phone notifications (Web Push)
+const PUSH = {
+  supported: () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window,
+  ios: () => /iphone|ipad|ipod/i.test(navigator.userAgent),
+  standalone: () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true,
+  async sub() { if (!PUSH.supported()) return null; const reg = await navigator.serviceWorker.ready; return reg.pushManager.getSubscription(); },
+  async enable() {
+    if (!PUSH.supported()) throw new Error(PUSH.ios() && !PUSH.standalone() ? 'على الآيفون: أضف النظام للشاشة الرئيسية أولاً (Safari ← مشاركة ← إضافة إلى الشاشة الرئيسية) ثم افتحه منها' : 'هذا المتصفح لا يدعم التنبيهات. استخدم Chrome');
+    const perm = await Notification.requestPermission();
+    if (perm !== 'granted') throw new Error('رفضت التنبيهات. فعّلها من إعدادات المتصفح ← الإشعارات');
+    const reg = await navigator.serviceWorker.ready;
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub) {
+      const { key } = await api('/api/push/key');
+      const raw = atob(key.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - key.length % 4) % 4));
+      sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: Uint8Array.from(raw, (ch) => ch.charCodeAt(0)) });
+    }
+    return api('/api/push/subscribe', { method: 'POST', body: { subscription: sub.toJSON() } });
+  },
+  async disable() { const sub = await PUSH.sub(); if (sub) { await api('/api/push/unsubscribe', { method: 'POST', body: { endpoint: sub.endpoint } }).catch(() => {}); await sub.unsubscribe(); } },
+  /** After login on a phone that already allowed notifications, attach the device to this account. */
+  async refresh() { try { if (PUSH.supported() && Notification.permission === 'granted') { const sub = await PUSH.sub(); if (sub) await api('/api/push/subscribe', { method: 'POST', body: { subscription: sub.toJSON() } }); } } catch {} },
+};
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
+
 // ------------------------------------------------------------------ boot & shell
 async function boot() {
   try {
@@ -141,6 +166,7 @@ async function boot() {
     tz = me.tzOffset;
     window.addEventListener('hashchange', route);
     route();
+    PUSH.refresh();
   } catch {
     if (!ME) renderLogin();
   }
@@ -267,6 +293,7 @@ PAGES.today = async () => {
         <div class="state">${pill(live[0], live[1])} ${d.periods.length ? statusPill(d.status) : pill('لا يوجد دوام اليوم')}</div>
         ${d.periods.length ? `<div class="periods">${d.periods.map((p) => pill(`${p.name}: ${p.start} – ${p.end}`, 'plain')).join('')}</div>` : ''}
         ${exitCard(data)}
+        <div id="pushBanner"></div>
         <div class="actions">${data.allowed.filter((a) => !(a === 'leave' && data.exit?.status === 'approved' && !data.exit.left_at)).map((a) => buttons[a]).join('')}
           ${data.allowed.includes('leave') && !(data.exit && (data.exit.status === 'pending' || (data.exit.status === 'approved' && !data.exit.back_at))) ? '<button class="btn ghost" data-x="ask">طلب إذن خروج</button>' : ''}</div>
         ${data.geo ? '<p class="muted small">يُسجَّل موقعك مع كل بصمة للتحقق من وجودك في مكان العمل.</p>' : ''}
@@ -280,6 +307,7 @@ PAGES.today = async () => {
         ${data.punches.length ? `<div class="timeline">${data.punches.map((p) => `<div class="ev ${p.type}"><b class="num">${fmtT(p.ts)}</b><span class="dot"></span><div>${PUNCH[p.type]}${p.note ? ` <span class="muted small">· ${esc(p.note)}</span>` : ''}</div></div>`).join('')}</div>` : '<p class="muted">لم تسجّل أي بصمة اليوم.</p>'}
       </section>`);
     $$('[data-p]', pg).forEach((b) => { b.onclick = () => punch(b.dataset.p, b); });
+    pushBanner($('#pushBanner', pg));
     const ask = $('[data-x=ask]', pg);
     if (ask) ask.onclick = () => askExit();
     const go = $('[data-x=go]', pg);
@@ -341,6 +369,22 @@ PAGES.today = async () => {
   }, 10000);
   let lastPoll = Date.now();
 };
+
+/** «Turn on phone alarms» card, until the device is subscribed (or dismissed for 3 days). */
+async function pushBanner(el) {
+  if (!el) return;
+  let later = 0; try { later = +localStorage.getItem('push-later') || 0; } catch {}
+  if (Date.now() < later) return;
+  const sub = await PUSH.sub().catch(() => null);
+  if (sub && Notification.permission === 'granted') return;
+  const iosHint = PUSH.ios() && !PUSH.standalone();
+  el.innerHTML = `<div class="pushcard"><b>🔔 فعّل منبّه الدوام على جوالك</b>
+    <span>${iosHint ? 'على الآيفون: من Safari اضغط مشاركة ← «إضافة إلى الشاشة الرئيسية»، وافتح النظام من الأيقونة ثم فعّل.' : 'يوصلك قبل كل فترة، وعند الاستراحة والانصراف، وكل قرار على طلباتك، حتى لو الجوال مقفل.'}</span>
+    <div class="row" style="justify-content:center">${iosHint ? '' : '<button class="btn sm" type="button" id="pb-on">تفعيل التنبيهات</button>'}<button class="link" type="button" id="pb-later">لاحقاً</button></div></div>`;
+  $('#pb-later', el).onclick = () => { try { localStorage.setItem('push-later', Date.now() + 3 * 86400000); } catch {} el.innerHTML = ''; };
+  const on = $('#pb-on', el);
+  if (on) on.onclick = async () => { if (await act(on, () => PUSH.enable(), 'تم تفعيل تنبيهات الجوال')) el.innerHTML = ''; };
+}
 
 /** Where the exit permission stands, on the punch screen. */
 function exitCard(data) {
@@ -408,7 +452,18 @@ PAGES.account = async () => {
         <button class="btn" type="submit">حفظ</button>
       </form>
       <p class="muted small">اسم المستخدم: <b dir="ltr">${esc(ME.username)}</b></p>
+    </section>
+    <section class="panel" style="max-width:520px"><header><h2>تنبيهات الجوال</h2><span id="ps"></span></header>
+      <p class="muted small">منبّهات الدوام وكل إشعارات النظام تطلع على شاشة هذا الجوال مباشرة بصوت واهتزاز، حتى لو كان مقفل. فعّلها على كل جوال تستخدمه.</p>
+      <div class="row"><button class="btn" type="button" id="p-on">تفعيل على هذا الجوال</button><button class="btn ghost" type="button" id="p-test">إرسال تنبيه تجربة</button><button class="link bad" type="button" id="p-off">إيقاف</button></div>
+      ${PUSH.ios() && !PUSH.standalone() ? '<p class="muted small">على الآيفون: من Safari اضغط مشاركة ← «إضافة إلى الشاشة الرئيسية»، وافتح النظام من الأيقونة الجديدة، ثم فعّل من هنا.</p>' : ''}
     </section>`);
+  const ps = $('#ps', pg);
+  const showState = async () => { const sub = await PUSH.sub().catch(() => null); ps.innerHTML = sub && Notification.permission === 'granted' ? pill('مفعّلة', 'good') : pill('غير مفعّلة', 'warn'); };
+  showState();
+  $('#p-on', pg).onclick = async (e) => { if (await act(e.target, () => PUSH.enable(), 'تم التفعيل')) showState(); };
+  $('#p-test', pg).onclick = (e) => act(e.target, () => api('/api/push/test', { method: 'POST' }), 'أُرسل التنبيه، شوف شاشة الجوال');
+  $('#p-off', pg).onclick = async (e) => { await act(e.target, () => PUSH.disable(), 'تم الإيقاف'); showState(); };
   $('#pw', pg).onsubmit = async (e) => {
     e.preventDefault();
     const ok = await act($('button', e.target), () => api('/api/me/password', { method: 'POST', body: formData(e.target) }), 'تم تغيير كلمة المرور');
@@ -1155,9 +1210,9 @@ PAGES.staff = async () => {
   const pg = render(`
     <div class="topline"><h1>الموظفون</h1><button class="btn" id="addU" type="button">إضافة موظف</button></div>
     <section class="panel">
-      ${table(['الاسم', 'اسم المستخدم', 'الدخول', 'واتساب', 'الراتب', 'الفترات', 'الإجازة الأسبوعية', 'الصلاحيات', 'الحالة', ''],
+      ${table(['الاسم', 'اسم المستخدم', 'الدخول', 'واتساب', 'تنبيهات الجوال', 'الراتب', 'الفترات', 'الإجازة الأسبوعية', 'الصلاحيات', 'الحالة', ''],
         d.users.map((u) => `<tr><td><b>${esc(u.name)}</b>${u.role === 'admin' ? ` ${pill('مدير', 'info')}` : ''}</td><td dir="ltr">${esc(u.username)}</td>
-          <td>${u.has_password ? pill('مفعّل', 'good') : pill('بدون كلمة مرور', 'warn')}</td><td dir="ltr" class="small">${u.role === 'admin' ? '—' : (u.phone ? esc(u.phone) : '<span class="muted">—</span>')}</td><td>${u.role === 'admin' ? '—' : money(u.salary)}</td>
+          <td>${u.has_password ? pill('مفعّل', 'good') : pill('بدون كلمة مرور', 'warn')}</td><td dir="ltr" class="small">${u.role === 'admin' ? '—' : (u.phone ? esc(u.phone) : '<span class="muted">—</span>')}</td><td>${u.push_devices ? pill(`${u.push_devices} جهاز`, 'good') : '<span class="muted small">غير مفعّلة</span>'}</td><td>${u.role === 'admin' ? '—' : money(u.salary)}</td>
           <td class="wrap">${u.role === 'admin' ? '—' : esc(periodName(u.periods))}</td><td>${u.day_off === null ? 'لا يوجد' : DAYS[u.day_off]}</td>
           <td class="wrap small">${u.role === 'admin' ? 'كل شيء' : (u.perms.map((k) => esc(permName(k))).join('، ') || '—')}</td><td>${u.active ? pill('نشط', 'good') : pill('موقوف', '')}</td>
           <td><button class="btn sm ghost" data-e="${u.id}">تعديل</button></td></tr>`))}
@@ -1349,6 +1404,7 @@ PAGES.settings = async () => {
         <label class="check"><input type="checkbox" id="n-mgr" ${s.notify.alert_manager ? 'checked' : ''}>تنبيهات للمدير: تأخير، غياب، بصمة مشبوهة، خروج مؤقت، طلب فسح أو نواقص، تذكرة جديدة</label>
         <label class="check"><input type="checkbox" id="n-acc" ${s.notify.staff_account ? 'checked' : ''}>إشعار الموظف عن حسابه: خصم، سلفة أو سداد، رد على تذكرته، قرار على طلبه</label>
         <label class="check"><input type="checkbox" id="n-sum" ${s.notify.daily_summary ? 'checked' : ''}>ملخص يومي للمدير: الحضور والتأخير والغياب، الطلبات حسب القناة، الأرقام اليومية، وما لم يُسجَّل</label>
+        <label class="check"><input type="checkbox" id="n-push" ${s.notify.push !== false ? 'checked' : ''}>تنبيهات الجوال المباشرة (مثل المنبّه): نفس الإشعارات تطلع على شاشة جوال الموظف وجوالك، بجانب واتساب</label>
         <label class="check" style="margin-inline-start:26px"><input type="checkbox" id="n-pdf" ${s.notify.summary_pdf ? 'checked' : ''}>أرسل الملخص اليومي كملف PDF للتقرير اليومي الشامل (مع أهم الأرقام في نص الرسالة)</label>
         <label class="check"><input type="checkbox" id="n-all" ${s.notify.alert_all ? 'checked' : ''}>كل حركة صغيرة أو كبيرة للمدير: كل بصمة، كل رقم يُسجَّل، كل فاتورة ومرتجع، كل رد على تذكرة</label>
         <label class="check"><input type="checkbox" id="n-month" ${s.notify.monthly_auto ? 'checked' : ''}>أول كل شهر: التقرير الشهري للمدير، وإعلان موظف الشهر للفريق</label>
@@ -1412,7 +1468,7 @@ PAGES.settings = async () => {
       notify: {
         manager_phone: $('#n-phone', pg).value.trim(), app_url: $('#n-url', pg).value.trim(), summary_time: $('#n-time', pg).value, remind_after_minutes: $('#n-after', pg).value,
         shift_alerts: $('#n-alarm', pg).checked, alert_before_minutes: $('#n-before', pg).value,
-        remind_staff: $('#n-staff', pg).checked, alert_manager: $('#n-mgr', pg).checked, staff_account: $('#n-acc', pg).checked, daily_summary: $('#n-sum', pg).checked, summary_pdf: $('#n-pdf', pg).checked,
+        remind_staff: $('#n-staff', pg).checked, alert_manager: $('#n-mgr', pg).checked, staff_account: $('#n-acc', pg).checked, daily_summary: $('#n-sum', pg).checked, summary_pdf: $('#n-pdf', pg).checked, push: $('#n-push', pg).checked,
         alert_all: $('#n-all', pg).checked, monthly_auto: $('#n-month', pg).checked, daily_backup: $('#n-bak', pg).checked, backup_time: $('#n-bak-t', pg).value,
       },
     };

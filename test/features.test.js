@@ -336,3 +336,43 @@ test('barcode: shipments and returns are counted from scans, once per code', asy
   assert.match(daily.body, /المسح بالباركود/);
   assert.match(daily.body, /SMSA-1002/);
 });
+
+test('phone notifications: alarms and decisions reach subscribed devices, once', async () => {
+  const { setPushSender, cardToPush } = await import('../src/push.js');
+  const { tick } = await import('../src/notify.js');
+  const sent = [];
+  setPushSender(async (sub, payload, opts) => { sent.push({ to: sub.endpoint, ...JSON.parse(payload), urgency: opts.urgency }); });
+  const key = (await ali('GET', '/api/push/key')).body.key;
+  assert.ok(key.length > 60);
+  const sub = { endpoint: 'https://fcm.googleapis.com/fcm/send/ali-phone', keys: { p256dh: 'BOr', auth: 'xyz' } };
+  assert.equal((await ali('POST', '/api/push/subscribe', { subscription: sub })).body.devices, 1);
+  assert.equal((await ali('POST', '/api/push/subscribe', { subscription: { endpoint: 'http://x' } })).status, 400);
+  await admin('POST', '/api/push/subscribe', { subscription: { endpoint: 'https://fcm.googleapis.com/fcm/send/boss', keys: { p256dh: 'B', auth: 'a' } } });
+  // the WhatsApp card becomes a short notification
+  const c = cardToPush('*وريف · فريق العمل*\n━━━━━━━━━━━━━━━\n⏰ *منبّه الفترة الصباحية*\n\nصباح الخير علي 🌤️\nفترتك تبدأ الساعة *07:00*\n━━━━━━━━━━━━━━━\n✨ _فريق واحد، هدف واحد_');
+  assert.equal(c.title, '⏰ منبّه الفترة الصباحية');
+  assert.match(c.body, /فترتك تبدأ الساعة 07:00/);
+  assert.doesNotMatch(c.body, /فريق واحد/);
+  // the morning alarm goes to the phone too, urgent, and only once
+  const day = '2026-10-17';
+  tick(db, at(day, '06:50')); tick(db, at(day, '06:51'));
+  await new Promise((r) => setTimeout(r, 30));
+  const alarms = sent.filter((s) => s.to.endsWith('ali-phone') && /منبّه/.test(s.title));
+  assert.equal(alarms.length, 1);
+  assert.equal(alarms[0].urgent, true);
+  assert.equal(alarms[0].urgency, 'high');
+  // manager alerts reach the manager's device
+  const before = sent.length;
+  const q = (await ali('POST', '/api/leaves', { kind: 'leave', from_date: addDays(localDate(), 5), reason: 'سفر' })).body;
+  await new Promise((r) => setTimeout(r, 30));
+  assert.ok(sent.slice(before).some((s) => s.to.endsWith('boss') && /طلب إجازة/.test(s.title)));
+  await admin('PUT', `/api/leaves/${q.id}`, { status: 'approved' });
+  await new Promise((r) => setTimeout(r, 30));
+  assert.ok(sent.some((s) => s.to.endsWith('ali-phone') && /تمت الموافقة/.test(s.title) && s.url === '/#/leaves'));
+  // test button, and a dead device is removed
+  setPushSender(async () => { throw Object.assign(new Error('gone'), { statusCode: 410 }); });
+  assert.equal((await ali('POST', '/api/push/test')).status, 200);
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM push_subscriptions WHERE endpoint LIKE '%ali-phone'").get().n, 0);
+  assert.equal((await ali('POST', '/api/push/test')).status, 400);
+});

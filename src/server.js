@@ -28,6 +28,7 @@ import { performance } from './performance.js';
 import { handleIncoming } from './commands.js';
 import { currentExit, endExit, exitTick, requestExit, startExit } from './exits.js';
 import { SCAN_KINDS, SCAN_METRIC, addScan, removeScan, scanCounts, scanList } from './scans.js';
+import { pushTo, removeSubscription, saveSubscription, vapidKeys } from './push.js';
 import { renderMonthlyReport, renderPayslip } from './print.js';
 import * as msg from './messages.js';
 import { DEDUCTION_LABELS, TICKET_KINDS, PUNCH_LABELS } from './reports.js';
@@ -80,7 +81,7 @@ function userView(u) {
   return {
     id: u.id, username: u.username, name: u.name, role: u.role, active: !!u.active, salary: u.salary,
     periods: u.periods ? JSON.parse(u.periods) : null, day_off: u.day_off, perms: JSON.parse(u.perms || '[]'),
-    has_password: !!u.password_hash, created_at: u.created_at, phone: u.phone || '',
+    has_password: !!u.password_hash, created_at: u.created_at, phone: u.phone || '', push_devices: u.push_devices || 0,
   };
 }
 
@@ -380,6 +381,18 @@ export function createApp(db) {
       notifyActivity(db, 'stock_status', msg.mgrReturnStatus({ name: user.name, party: row.party, sku: ids.length > 1 ? `${ids.length} أصناف` : row.sku, qty, status, note }));
     }
     return { ok: true, ids };
+  }, { auth: true });
+
+  // ------------------------------------------------------------ phone notifications (Web Push)
+  r.get('/api/push/key', () => ({ key: vapidKeys(db).publicKey }), { auth: true });
+  r.post('/api/push/subscribe', async ({ req, user }) => {
+    try { return { ok: true, devices: saveSubscription(db, user.id, parseJson(await readBody(req)).subscription, req.headers['user-agent']) }; } catch (e) { throw new HttpError(e.status || 400, e.message); }
+  }, { auth: true });
+  r.post('/api/push/unsubscribe', async ({ req, user }) => ({ ok: true, removed: removeSubscription(db, user.id, parseJson(await readBody(req)).endpoint) }), { auth: true });
+  r.post('/api/push/test', ({ user }) => {
+    const n = pushTo(db, { userId: user.id, kind: 'alarm_start', body: msg.card({ icon: '🔔', title: 'تنبيهات الجوال تعمل', lines: ['من الآن يوصلك منبّه الدوام وكل الإشعارات هنا مباشرة.'] }) });
+    if (!n) throw new HttpError(400, 'فعّل التنبيهات على هذا الجوال أولاً');
+    return { ok: true, devices: n };
   }, { auth: true });
 
   // ------------------------------------------------------------ barcode scans
@@ -707,7 +720,7 @@ export function createApp(db) {
   r.get('/api/users', ({ user }) => {
     requireAdmin(user);
     const st = getSettings(db);
-    return { users: db.prepare('SELECT * FROM users ORDER BY role, id').all().map(userView), periods: allPeriods(st.schedule), permissions: permissionList(st) };
+    return { users: db.prepare('SELECT u.*, (SELECT COUNT(*) FROM push_subscriptions p WHERE p.user_id = u.id) AS push_devices FROM users u ORDER BY role, id').all().map(userView), periods: allPeriods(st.schedule), permissions: permissionList(st) };
   }, { auth: true });
   const applyUser = (b, existing = null) => {
     const out = {};
@@ -952,7 +965,7 @@ async function serveStatic(res, pathname) {
   const body = await readFile(file);
   res.writeHead(200, {
     'Content-Type': MIME[ext] || 'application/octet-stream',
-    'Cache-Control': ext === '.html' ? 'no-cache' : 'public, max-age=3600',
+    'Cache-Control': ext === '.html' || rel === 'sw.js' || ext === '.webmanifest' ? 'no-cache' : 'public, max-age=3600',
     'X-Content-Type-Options': 'nosniff',
     ...(ext === '.html' ? SECURITY_HEADERS : {}),
   });

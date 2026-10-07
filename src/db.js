@@ -292,6 +292,23 @@ const MIGRATIONS = [
   CREATE INDEX scans_day ON scans(date, kind);
   UPDATE users SET perms = json_insert(perms, '$[#]', 'scan') WHERE username = 'abdullah' AND perms NOT LIKE '%"scan"%';
   `,
+  // v7: phone notifications (Web Push): one row per device that allowed notifications.
+  `
+  CREATE TABLE push_subscriptions (
+    id INTEGER PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    endpoint TEXT NOT NULL UNIQUE,
+    p256dh TEXT NOT NULL,
+    auth TEXT NOT NULL,
+    user_agent TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    last_ok_at INTEGER,
+    fails INTEGER NOT NULL DEFAULT 0
+  );
+  CREATE INDEX push_subscriptions_user ON push_subscriptions(user_id);
+  -- reminders that must reach the phone once only (same keys as the WhatsApp queue)
+  CREATE TABLE push_sent (key TEXT PRIMARY KEY, ts INTEGER NOT NULL);
+  `,
 ];
 
 export function openDb(path) {
