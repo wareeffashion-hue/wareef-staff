@@ -1,6 +1,8 @@
 FROM node:22-alpine
 WORKDIR /app
-ENV NODE_ENV=production PORT=3000 DB_PATH=/data/staff.db SECURE_COOKIES=1 TZ_OFFSET=+03:00
+# Headless Chromium turns the daily report into the PDF that goes to the manager's WhatsApp.
+RUN apk add --no-cache chromium font-noto-arabic font-liberation
+ENV CHROMIUM_PATH=/usr/bin/chromium-browser PUPPETEER_SKIP_DOWNLOAD=1 NODE_ENV=production PORT=3000 DB_PATH=/data/staff.db SECURE_COOKIES=1 TZ_OFFSET=+03:00
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --no-audit --no-fund
 COPY src ./src

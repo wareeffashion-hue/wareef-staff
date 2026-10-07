@@ -285,3 +285,18 @@ test('exit permission: ask for minutes, manager approves, out now, back to the o
   const row = loadAttendance(db, { from: localDate(), to: localDate(), userId: id('safwan') })[0];
   assert.equal(row.exitMinutes, 0);
 });
+
+test('daily report as PDF, and its WhatsApp caption', async () => {
+  const { summaryCaption } = await import('../src/notify.js');
+  const { chromiumPath } = await import('../src/pdf.js');
+  const cap = summaryCaption(db, localDate());
+  assert.match(cap, /التقرير اليومي الشامل/);
+  assert.match(cap, /حضروا: \*/);
+  assert.match(cap, /الملف المرفق/);
+  assert.equal((await ali('GET', `/report/daily.pdf?date=${localDate()}`)).status, 403);
+  if (!chromiumPath()) return; // no Chromium on this machine
+  assert.equal((await fetch(`${base}/report/daily.pdf?date=${localDate()}`, { redirect: 'manual' })).status, 302, 'needs a session');
+  const pdf = await admin('GET', `/report/daily.pdf?date=${localDate()}`);
+  assert.equal(pdf.status, 200);
+  assert.ok(pdf.body.startsWith('%PDF'));
+});

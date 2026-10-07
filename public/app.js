@@ -449,6 +449,7 @@ PAGES.dashboard = async () => {
         <div class="tools">
           <input type="date" id="dd" value="${date}" max="${today()}" aria-label="التاريخ">
           <a class="btn ghost" href="/report/daily?date=${date}" target="_blank" rel="noopener">${icon('file')}التقرير اليومي</a>
+          <a class="btn ghost" href="/report/daily.pdf?date=${date}">${icon('down')}PDF</a>
           <a class="btn" href="/api/export/daily?date=${date}">${icon('down')}تصدير Excel</a>
         </div>
       </div>
@@ -1199,7 +1200,7 @@ PAGES.reports = async () => {
       <section class="panel"><header><h2>التقرير اليومي الشامل</h2></header>
         <p class="muted small">الحضور والبصمات، الطلبات حسب القناة، الشحنات والمرتجعات، البضائع، التذاكر، والخصومات والسلف لذلك اليوم.</p>
         <div class="row"><label class="f">اليوم<input type="date" id="r-day" value="${today()}" max="${today()}"></label></div>
-        <div class="row"><a class="btn ghost" id="r-print" target="_blank" rel="noopener">${icon('file')}عرض وطباعة</a><a class="btn" id="r-csv">${icon('down')}تنزيل Excel</a></div>
+        <div class="row"><a class="btn ghost" id="r-print" target="_blank" rel="noopener">${icon('file')}عرض وطباعة</a><a class="btn ghost" id="r-pdf">${icon('down')}تنزيل PDF</a><a class="btn" id="r-csv">${icon('down')}تنزيل Excel</a></div>
       </section>
       <section class="panel"><header><h2>التقرير الشهري</h2></header>
         <p class="muted small">الطلبات والعمليات، البضائع والمرتجعات، تقييم الأداء، الحضور${ME.role === 'admin' ? ' والرواتب' : ''}. يوصلك ملخصه على واتساب أول كل شهر.</p>
@@ -1228,6 +1229,7 @@ ${ME.role === 'admin' ? `      <section class="panel"><header><h2>مسيّر ا�
     $('#r-print', pg).href = `/report/daily?date=${v('#r-day')}`;
     $('#r-month', pg).href = `/report/monthly?month=${v('#r-mm')}`;
     $('#r-csv', pg).href = `/api/export/daily?date=${v('#r-day')}`;
+    $('#r-pdf', pg).href = `/report/daily.pdf?date=${v('#r-day')}`;
     $('#r-att', pg).href = `/api/export/attendance?from=${v('#r-af')}&to=${v('#r-at')}`;
     if ($('#r-pay', pg)) $('#r-pay', pg).href = `/api/export/payroll?month=${v('#r-m')}`;
     $('#r-ops', pg).href = `/api/export/ops?from=${v('#r-of')}&to=${v('#r-ot')}`;
@@ -1344,6 +1346,7 @@ PAGES.settings = async () => {
         <label class="check"><input type="checkbox" id="n-mgr" ${s.notify.alert_manager ? 'checked' : ''}>تنبيهات للمدير: تأخير، غياب، بصمة مشبوهة، خروج مؤقت، طلب فسح أو نواقص، تذكرة جديدة</label>
         <label class="check"><input type="checkbox" id="n-acc" ${s.notify.staff_account ? 'checked' : ''}>إشعار الموظف عن حسابه: خصم، سلفة أو سداد، رد على تذكرته، قرار على طلبه</label>
         <label class="check"><input type="checkbox" id="n-sum" ${s.notify.daily_summary ? 'checked' : ''}>ملخص يومي للمدير: الحضور والتأخير والغياب، الطلبات حسب القناة، الأرقام اليومية، وما لم يُسجَّل</label>
+        <label class="check" style="margin-inline-start:26px"><input type="checkbox" id="n-pdf" ${s.notify.summary_pdf ? 'checked' : ''}>أرسل الملخص اليومي كملف PDF للتقرير اليومي الشامل (مع أهم الأرقام في نص الرسالة)</label>
         <label class="check"><input type="checkbox" id="n-all" ${s.notify.alert_all ? 'checked' : ''}>كل حركة صغيرة أو كبيرة للمدير: كل بصمة، كل رقم يُسجَّل، كل فاتورة ومرتجع، كل رد على تذكرة</label>
         <label class="check"><input type="checkbox" id="n-month" ${s.notify.monthly_auto ? 'checked' : ''}>أول كل شهر: التقرير الشهري للمدير، وإعلان موظف الشهر للفريق</label>
         <div class="row" style="align-items:center"><label class="check" style="flex:2 1 300px"><input type="checkbox" id="n-bak" ${s.notify.daily_backup ? 'checked' : ''}>نسخة احتياطية من قاعدة البيانات لواتساب المدير كل ليلة</label>
@@ -1406,7 +1409,7 @@ PAGES.settings = async () => {
       notify: {
         manager_phone: $('#n-phone', pg).value.trim(), app_url: $('#n-url', pg).value.trim(), summary_time: $('#n-time', pg).value, remind_after_minutes: $('#n-after', pg).value,
         shift_alerts: $('#n-alarm', pg).checked, alert_before_minutes: $('#n-before', pg).value,
-        remind_staff: $('#n-staff', pg).checked, alert_manager: $('#n-mgr', pg).checked, staff_account: $('#n-acc', pg).checked, daily_summary: $('#n-sum', pg).checked,
+        remind_staff: $('#n-staff', pg).checked, alert_manager: $('#n-mgr', pg).checked, staff_account: $('#n-acc', pg).checked, daily_summary: $('#n-sum', pg).checked, summary_pdf: $('#n-pdf', pg).checked,
         alert_all: $('#n-all', pg).checked, monthly_auto: $('#n-month', pg).checked, daily_backup: $('#n-bak', pg).checked, backup_time: $('#n-bak-t', pg).value,
       },
     };

@@ -17,7 +17,7 @@ th { background: var(--sunk); font-weight: 700; }
 .empty, .note { color: var(--muted); margin: 0; }
 .st { font-weight: 700; } .st-present { color: var(--good); } .st-late, .st-not_arrived { color: var(--warn); } .st-absent, .st-partial { color: var(--bad); }
 footer { margin-top: 28px; color: var(--muted); font-size: .8rem; border-top: 1px solid var(--line); padding-top: 10px; }
-@media print { .noprint { display: none; } body { padding: 0; } h2 { break-after: avoid; } tr { break-inside: avoid; } }
+@media print { .noprint { display: none; } body { padding: 0 3px; max-width: none; } .kpis { grid-template-columns: repeat(6, 1fr); } .kpis b { font-size: 1.2rem; } h2 { break-after: avoid; } tr { break-inside: avoid; } }
 .slip { border: 1px solid var(--line); border-radius: 10px; padding: 4px 16px; margin: 6px 0; }
 .slip table td, .slip table th { border: 0; border-bottom: 1px solid var(--line); }
 .slip .total td { font-size: 1.15rem; font-weight: 700; border-bottom: 0; }

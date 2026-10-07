@@ -123,11 +123,11 @@ export async function waSend(to, text) {
   remember(await sock.sendMessage(hit.jid, { text }));
 }
 
-export async function waSendDocument(to, buffer, fileName, caption = '') {
+export async function waSendDocument(to, buffer, fileName, caption = '', mimetype = 'application/vnd.sqlite3') {
   if (!waConnected()) throw Object.assign(new Error('واتساب غير مربوط حالياً'), { defer: true });
   const [hit] = await sock.onWhatsApp(`${to}@s.whatsapp.net`);
   if (!hit?.exists) throw new Error(`الرقم ${to} غير مسجّل في واتساب`);
-  remember(await sock.sendMessage(hit.jid, { document: buffer, fileName, mimetype: 'application/vnd.sqlite3', caption }));
+  remember(await sock.sendMessage(hit.jid, { document: buffer, fileName, mimetype, caption }));
 }
 
 export async function waLogout() {

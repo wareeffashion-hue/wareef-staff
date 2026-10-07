@@ -21,7 +21,7 @@ import {
 } from './reports.js';
 import { renderDailyReport } from './print.js';
 import { waAutoStart, waLogout, waOnMessage, waQrSvg, waStart, waStatus } from './wa.js';
-import { appLink, flush, normalizePhone, notifyActivity, notifyEmployee, notifyManager, providerStatus, queue, startNotifier, dailySummary } from './notify.js';
+import { appLink, dailyPdf, flush, normalizePhone, notifyActivity, notifyEmployee, notifyManager, providerStatus, queue, startNotifier, dailySummary } from './notify.js';
 import { decideLeave, decideRequest } from './decisions.js';
 import { announceAward, assertOpen, awardOf, closeMonth, closedMonth, monthlyData, monthlyTick, payrollFor, reopenMonth, sendPayslips } from './monthly.js';
 import { performance } from './performance.js';
@@ -789,9 +789,10 @@ export function createApp(db) {
     if (!to) throw new HttpError(400, 'اكتب رقم جوال المدير في إعدادات الإشعارات أولاً');
     if (!providerStatus().configured) throw new HttpError(400, 'اربط حساب واتساب أولاً بمسح رمز QR من إعدادات الإشعارات');
     const body = b.kind === 'summary' ? dailySummary(db, localDate(), loadAttendance(db, { from: localDate(), to: localDate() })) : msg.test({ link: appLink(db) });
-    queue(db, { to, body, kind: 'test' });
+    const kind = b.kind === 'summary' ? 'summary' : 'test';
+    queue(db, { to, body, kind });
     await flush(db);
-    const last = db.prepare("SELECT status, error FROM notifications WHERE kind = 'test' ORDER BY id DESC LIMIT 1").get();
+    const last = db.prepare('SELECT status, error FROM notifications WHERE kind = ? ORDER BY id DESC LIMIT 1').get(kind);
     if (last.status !== 'sent') throw new HttpError(502, `ما وصلت الرسالة: ${last.error || last.status}`);
     return { ok: true };
   }, { auth: true });
@@ -847,6 +848,13 @@ export function createApp(db) {
   });
 
   // Printable daily report (open in the browser, print or save as PDF).
+  r.get('/report/daily.pdf', async ({ url, res, user }) => {
+    requireManager(user);
+    const date = needDate(url.searchParams.get('date'), localDate());
+    let pdf;
+    try { pdf = await dailyPdf(db, date); } catch (e) { throw new HttpError(503, `تعذّر إنشاء PDF: ${e.message}`); }
+    send(res, 200, pdf, { 'Content-Type': 'application/pdf', 'Content-Disposition': `attachment; filename="wareef-daily-${date}.pdf"` });
+  }, { auth: true, page: true });
   r.get('/report/daily', ({ url, res, user }) => {
     requireManager(user);
     const date = needDate(url.searchParams.get('date'), localDate());

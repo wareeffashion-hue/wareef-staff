@@ -1,5 +1,6 @@
 // Server-rendered daily report: open it, print it, or save as PDF from the browser.
-import { localTime } from './time.js';
+import { localDate, localTime } from './time.js';
+const issued = () => `${localDate()} ${localTime(Date.now())}`;
 import { FLAG_LABELS } from './punch.js';
 import { monthName } from './messages.js';
 import { STATUS_LABELS, PUNCH_LABELS, DEDUCTION_LABELS, TICKET_KINDS, TICKET_STATUS, STOCK_KINDS, REQUEST_KINDS, REQUEST_STATUS } from './reports.js';
@@ -79,7 +80,7 @@ ${table(['الموظف', 'النوع', 'المبلغ', 'التفاصيل'], [
     ...d.debts.map((x) => [esc(x.user_name), x.kind === 'loan' ? 'سلفة' : 'سداد سلفة', n(x.amount), esc(x.note)]),
   ])}
 
-<footer>وريف · فريق العمل · صدر التقرير ${esc(new Date().toISOString().slice(0, 16).replace('T', ' '))} UTC</footer>
+<footer>وريف · فريق العمل · صدر التقرير ${esc(issued())}</footer>
 <script src="/print.js"></script>
 </body></html>`;
 }
@@ -87,7 +88,7 @@ ${table(['الموظف', 'النوع', 'المبلغ', 'التفاصيل'], [
 const sar = (v) => `${Number(v || 0).toLocaleString('en-US', { maximumFractionDigits: 2 })} ر.س`;
 const page = (title, body) => `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${esc(title)} | وريف</title><link rel="icon" href="/img/favicon.png"><link rel="stylesheet" href="/print.css"></head><body>${body}
-<footer>وريف · فريق العمل · صدر ${esc(new Date().toISOString().slice(0, 16).replace('T', ' '))} UTC</footer>
+<footer>وريف · فريق العمل · صدر ${esc(issued())}</footer>
 <script src="/print.js"></script></body></html>`;
 
 export function renderPayslip({ month, row: r, closed, deductions, debts }) {

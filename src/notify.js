@@ -17,7 +17,9 @@ import { MIN } from './config.js';
 import { localDate, localTime, at } from './time.js';
 import { getSettings } from './settings.js';
 import { loadAttendance } from './attendance.js';
-import { opsRows } from './reports.js';
+import { dailyReport, opsRows } from './reports.js';
+import { renderDailyReport } from './print.js';
+import { htmlToPdf } from './pdf.js';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -80,6 +82,14 @@ async function deliver(to, body, n = null, db = null) {
     if (provider !== 'qr') throw Object.assign(new Error('النسخة الاحتياطية عبر واتساب تحتاج الربط بالباركود'), { skip: true });
     const date = localDate();
     return waSendDocument(to, await snapshotDb(db), `wareef-backup-${date}.db`, body);
+  }
+  // The daily summary goes out as the full daily report in PDF, with the headline numbers as caption.
+  // If the PDF can't be made (no Chromium) the text summary is sent instead.
+  if (n?.kind === 'summary' && provider === 'qr' && getSettings(db).notify.summary_pdf) {
+    const date = /^summary:(\d{4}-\d{2}-\d{2})$/.exec(n.dedupe_key || '')?.[1] || localDate(n.created_at);
+    let pdf = null;
+    try { pdf = await dailyPdf(db, date); } catch (e) { console.error('daily pdf', e.message); }
+    if (pdf) return waSendDocument(to, pdf, `wareef-daily-${date}.pdf`, summaryCaption(db, date), 'application/pdf');
   }
   if (provider === 'qr') return waSend(to, body);
   if (!configured) throw Object.assign(new Error('مزوّد واتساب غير مضبوط'), { skip: true });
@@ -232,6 +242,27 @@ export function tick(db, now = Date.now()) {
   if (n.daily_summary && n.manager_phone && localTime(now) >= n.summary_time) {
     queue(db, { to: n.manager_phone, kind: 'summary', key: `summary:${date}`, body: dailySummary(db, date, rows, s) });
   }
+}
+
+export const dailyPdf = (db, date) => htmlToPdf(renderDailyReport(dailyReport(db, date)));
+
+/** Short caption for the PDF: the numbers you want to see without opening it. */
+export function summaryCaption(db, date) {
+  const rows = loadAttendance(db, { from: date, to: date });
+  const ops = opsRows(db, date, date)[0];
+  const num = (n) => Number(n || 0).toLocaleString('en-US');
+  const day = new Date(`${date}T12:00:00Z`).toLocaleDateString('ar-SA-u-ca-gregory-nu-latn', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'UTC' });
+  const late = rows.filter((r) => r.lateMinutes > 0);
+  const absent = rows.filter((r) => r.status === 'absent' || r.status === 'partial');
+  return msg.card({ manager: true, icon: '📊', title: `التقرير اليومي الشامل · ${day}`,
+    fields: [
+      ['حضروا', `${rows.filter((r) => ['present', 'late', 'partial', 'off_worked'].includes(r.status)).length} من ${rows.filter((r) => r.scheduledMinutes > 0).length}`],
+      ['متأخرون', late.length ? `${late.length} (${late.map((r) => r.name).join('، ')})` : '0'],
+      ['غياب', absent.length ? `${absent.length} (${absent.map((r) => r.name).join('، ')})` : '0'],
+      ['الطلبات', ops?.totalOrders ? `${num(ops.totalOrders)} · ${num(Math.round(ops.totalAmount))} ر.س` : 'لم تُسجَّل'],
+    ],
+    lines: ['التفاصيل كاملة في الملف المرفق 📎'],
+  });
 }
 
 export function dailySummary(db, date, rows, s = getSettings(db)) {

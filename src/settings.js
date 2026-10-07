@@ -47,6 +47,7 @@ export const DEFAULTS = {
     staff_account: true,         // tell employees about deductions, loans, replies, request decisions
     daily_summary: true,
     summary_time: '21:30',
+    summary_pdf: true,           // the daily summary arrives as the full daily report in PDF
     alert_all: true,             // the manager hears about every action: punches, entries, tickets, replies...
     monthly_auto: true,          // on the 1st: monthly report to the manager, employee of the month to everyone
     daily_backup: true,          // a copy of the database to the manager's WhatsApp every night
@@ -134,6 +135,7 @@ export function saveSettings(db, patch) {
       staff_account: !!n.staff_account,
       daily_summary: !!n.daily_summary,
       summary_time: n.summary_time || '21:30',
+      summary_pdf: !!(n.summary_pdf ?? true),
       alert_all: !!(n.alert_all ?? true),
       monthly_auto: !!(n.monthly_auto ?? true),
       daily_backup: !!(n.daily_backup ?? true),
