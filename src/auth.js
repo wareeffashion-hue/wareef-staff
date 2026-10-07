@@ -85,6 +85,15 @@ export function requirePerm(user, perm) {
   if (!can(user, perm)) throw new HttpError(403, 'ليست لديك صلاحية لهذا الإجراء');
 }
 
+/** The owner, or an employee holding the "supervisor" permission (no money, staff or settings). */
+export function isManager(user) {
+  return user.role === 'admin' || user.perms.includes('supervisor');
+}
+
+export function requireManager(user) {
+  if (!isManager(user)) throw new HttpError(403, 'هذه الصفحة للمدير أو المشرف فقط');
+}
+
 export function requireAdmin(user) {
   if (user.role !== 'admin') throw new HttpError(403, 'هذه الصفحة للمدير فقط');
 }
@@ -98,7 +107,7 @@ export function requireOps(user) {
 
 const STAFF = [
   ['abdullah', 'عبدالله', ['m:shipments', 'm:returns_warehouse', 'm:orders_prepared']],
-  ['basem', 'باسم', ['requests']],
+  ['basem', 'باسم', ['requests', 'm:late_orders', 'm:late_available', 'm:late_unavailable']],
   ['monther', 'منذر', ['m:pending_issues', 'm:pending_chats']],
   ['safwan', 'صفوان', ['m:daily_edits']],
   ['ali', 'علي', []],

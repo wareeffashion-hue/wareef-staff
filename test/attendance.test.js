@@ -85,3 +85,19 @@ test('excused day carries no penalties; day off records overtime', () => {
   assert.equal(off.status, 'off_worked');
   assert.equal(off.overtimeMinutes, 120);
 });
+
+test('approved hourly permission is not lateness, exit or absence, and not time worked', () => {
+  const permits = [[at(SAT, '07:00'), at(SAT, '09:00')]];
+  const d = computeDay({ date: SAT, periods, now: evening, grace: 10, permits,
+    punches: [p('09:00', 'in'), p('12:20', 'out'), p('13:00', 'in'), p('21:00', 'out')] });
+  assert.equal(d.lateMinutes, 0);
+  assert.equal(d.status, 'present');
+  assert.equal(d.periods[0].permitted, 120);
+  assert.equal(d.presentMinutes, 680);
+  const mid = computeDay({ date: SAT, periods, now: evening, grace: 10, permits: [[at(SAT, '15:00'), at(SAT, '16:00')]],
+    punches: [p('07:00', 'in'), p('12:20', 'out'), p('13:00', 'in'), p('15:00', 'leave', 'بنك'), p('16:00', 'back'), p('21:00', 'out')] });
+  assert.equal(mid.exitMinutes, 0);
+  const whole = computeDay({ date: SAT, periods, now: evening, permits: [[at(SAT, '07:00'), at(SAT, '12:20')]],
+    punches: [p('13:00', 'in'), p('21:00', 'out')] });
+  assert.equal(whole.absentPeriods, 0);
+});

@@ -212,6 +212,65 @@ const MIGRATIONS = [
   );
   CREATE INDEX notifications_status ON notifications(status, id);
   `,
+  // v4: leave requests, month close, employee of the month, OTP resets, merchant return tracking,
+  // Basem's late-orders numbers.
+  `
+  -- kind: leave (إجازة) | sick (مرضية) | permission (استئذان بالساعات، same day)
+  CREATE TABLE leave_requests (
+    id INTEGER PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL CHECK (kind IN ('leave', 'sick', 'permission')),
+    from_date TEXT NOT NULL,
+    to_date TEXT NOT NULL,
+    from_time TEXT NOT NULL DEFAULT '',
+    to_time TEXT NOT NULL DEFAULT '',
+    reason TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),
+    response TEXT NOT NULL DEFAULT '',
+    handled_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE INDEX leave_requests_user ON leave_requests(user_id, from_date);
+  CREATE INDEX leave_requests_status ON leave_requests(status, created_at);
+
+  -- A closed month is frozen: its payroll is read from the snapshot and money entries are locked.
+  CREATE TABLE payroll_closes (
+    month TEXT PRIMARY KEY,
+    snapshot TEXT NOT NULL,
+    closed_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    closed_at INTEGER NOT NULL
+  );
+
+  CREATE TABLE awards (
+    month TEXT PRIMARY KEY,
+    user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    score REAL NOT NULL,
+    details TEXT NOT NULL DEFAULT '',
+    announced_at INTEGER
+  );
+
+  CREATE TABLE otp_codes (
+    user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    code_hash TEXT NOT NULL,
+    expires_at INTEGER NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0
+  );
+
+  -- Merchant returns move ready → sent → settled.
+  ALTER TABLE stock_moves ADD COLUMN status TEXT NOT NULL DEFAULT '';
+  ALTER TABLE stock_moves ADD COLUMN status_note TEXT NOT NULL DEFAULT '';
+  ALTER TABLE stock_moves ADD COLUMN status_at INTEGER;
+  UPDATE stock_moves SET status = 'ready' WHERE kind = 'merchant_return';
+
+  UPDATE users SET perms = json_insert(json_insert(json_insert(perms, '$[#]', 'm:late_orders'), '$[#]', 'm:late_available'), '$[#]', 'm:late_unavailable')
+    WHERE username = 'basem' AND perms NOT LIKE '%late_orders%';
+  UPDATE settings SET value = json_insert(json_insert(json_insert(value,
+      '$[#]', json('{"key":"late_orders","name":"الطلبات المتأخرة","note":false}')),
+      '$[#]', json('{"key":"late_available","name":"منها متوفرة","note":false}')),
+      '$[#]', json('{"key":"late_unavailable","name":"منها غير متوفرة","note":true}'))
+    WHERE key = 'metrics' AND value NOT LIKE '%late_orders%';
+  `,
 ];
 
 export function openDb(path) {

@@ -148,12 +148,12 @@ export function toCsv(sections) {
 const t = (ts) => (ts ? localTime(ts) : '');
 const hm = (m) => (m ? `${Math.floor(m / 60)}:${String(m % 60).padStart(2, '0')}` : '0');
 
-export function attendanceSection(rows, title = 'الحضور والانصراف') {
+export function attendanceSection(rows, title = 'الحضور والانصراف', money = true) {
   return {
     title,
-    head: ['التاريخ', 'الموظف', 'الحالة', 'أول حضور', 'آخر انصراف', 'دقائق التأخير', 'انصراف مبكر (د)', 'خروج أثناء الدوام (د)', 'ساعات العمل', 'إضافي', 'الخصم المقترح', 'ملاحظات'],
+    head: ['التاريخ', 'الموظف', 'الحالة', 'أول حضور', 'آخر انصراف', 'دقائق التأخير', 'انصراف مبكر (د)', 'خروج أثناء الدوام (د)', 'ساعات العمل', 'إضافي', ...(money ? ['الخصم المقترح'] : []), 'ملاحظات'],
     rows: rows.map((r) => [r.date, r.name, STATUS_LABELS[r.status] || r.status, t(r.firstIn), t(r.lastOut), r.lateMinutes, r.earlyMinutes, r.exitMinutes,
-      hm(r.presentMinutes), hm(r.overtimeMinutes), r.suggested, r.flags.map((f) => FLAG_LABELS[f] || f).join(' / ')]),
+      hm(r.presentMinutes), hm(r.overtimeMinutes), ...(money ? [r.suggested] : []), r.flags.map((f) => FLAG_LABELS[f] || f).join(' / ')]),
   };
 }
 
@@ -179,8 +179,9 @@ export function opsSection(rows, channels, metrics = []) {
 export function stockSection(rows) {
   return {
     title: 'فواتير البضائع ومرتجعات التجار',
-    head: ['التاريخ', 'النوع', 'التاجر', 'رقم الفاتورة', 'كود المنتج', 'الوصف', 'العدد', 'القيمة', 'ملاحظة', 'سجّلها'],
-    rows: rows.map((r) => [r.date, STOCK_KINDS[r.kind], r.party, r.invoice_no, r.sku, r.description, r.quantity, r.value, r.note, r.created_by_name || '']),
+    head: ['التاريخ', 'النوع', 'التاجر', 'رقم الفاتورة', 'كود المنتج', 'الوصف', 'العدد', 'القيمة', 'ملاحظة', 'سجّلها', 'حالة المرتجع'],
+    rows: rows.map((r) => [r.date, STOCK_KINDS[r.kind], r.party, r.invoice_no, r.sku, r.description, r.quantity, r.value, r.note, r.created_by_name || '',
+      { ready: 'جاهز للإرسال', sent: 'أُرسل للتاجر', settled: 'تمت التسوية' }[r.status] || '']),
   };
 }
 

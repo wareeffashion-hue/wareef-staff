@@ -27,7 +27,21 @@ export function periodsFor(user, date, schedule, holiday = false) {
  * @param {number} o.salary          monthly salary, for the suggested deduction
  * @param {number} o.now             epoch ms
  */
-export function computeDay({ date, punches, periods, excuse = null, grace = 0, maxExit = 30, salary = 0, now = Date.now() }) {
+/** Merge overlapping [start, end] ranges. */
+function merge(list) {
+  const out = [];
+  for (const [a, b] of [...list].sort((x, y) => x[0] - y[0])) {
+    if (out.length && a <= out[out.length - 1][1]) out[out.length - 1][1] = Math.max(out[out.length - 1][1], b);
+    else out.push([a, b]);
+  }
+  return out;
+}
+
+/**
+ * `permits` are approved hourly permissions ([start, end] epoch ms): time inside them counts as
+ * covered for lateness, early leave, exits and absence, but not as time worked.
+ */
+export function computeDay({ date, punches, periods, excuse = null, grace = 0, maxExit = 30, salary = 0, now = Date.now(), permits = [] }) {
   const sorted = [...punches].sort((a, b) => a.ts - b.ts);
   const flags = new Set();
   const intervals = []; // [start, end] while present
@@ -69,24 +83,28 @@ export function computeDay({ date, punches, periods, excuse = null, grace = 0, m
     const row = { id: p.id, name: p.name, start: p.start, end: p.end, minutes: mins(e - s), firstIn: null, lastOut: null, late: 0, early: 0, exit: 0, present: 0, absent: false, state: 'done' };
     if (s > now) { row.state = 'upcoming'; return row; }
     const until = Math.min(e, now);
-    const ov = intervals.map(([a, b]) => [Math.max(a, s), Math.min(b, until)]).filter(([a, b]) => b > a);
+    const clip = (list) => list.map(([a, b]) => [Math.max(a, s), Math.min(b, until)]).filter(([a, b]) => b > a);
+    const ov = clip(intervals);
+    const cov = merge(clip([...intervals, ...permits]));
     const present = ov.reduce((t, [a, b]) => t + (b - a), 0);
+    const covered = cov.reduce((t, [a, b]) => t + (b - a), 0);
     row.present = mins(present);
+    row.permitted = mins(covered - present);
     if (e > now) row.state = 'running';
-    if (!ov.length) {
+    if (!cov.length) {
       if (e <= now) { row.absent = true; return row; }
       // Period is running and the employee hasn't arrived yet.
       row.state = 'not_arrived';
       if (now - s > graceMs) row.late = mins(now - s);
       return row;
     }
-    const lateMs = ov[0][0] - s;
-    const earlyMs = e <= now ? Math.max(0, e - ov[ov.length - 1][1]) : 0;
-    row.firstIn = ov[0][0];
-    row.lastOut = e <= now ? ov[ov.length - 1][1] : null;
+    const lateMs = cov[0][0] - s;
+    const earlyMs = e <= now ? Math.max(0, e - cov[cov.length - 1][1]) : 0;
+    row.firstIn = ov.length ? ov[0][0] : null;
+    row.lastOut = e <= now && ov.length ? ov[ov.length - 1][1] : null;
     row.late = lateMs > graceMs ? mins(lateMs) : 0;
     row.early = mins(earlyMs);
-    row.exit = mins(until - s - present - lateMs - earlyMs);
+    row.exit = mins(until - s - covered - lateMs - earlyMs);
     return row;
   });
 
@@ -164,6 +182,13 @@ export function loadAttendance(db, { from, to, userId = null, now = Date.now() }
   }
   const holidays = new Set(excuses.filter((e) => e.user_id === null).map((e) => e.date));
   const excuseOf = new Map(excuses.filter((e) => e.user_id !== null).map((e) => [`${e.user_id}|${e.date}`, e.kind]));
+  const permitsOf = new Map();
+  for (const p of db.prepare(`SELECT user_id, from_date, from_time, to_time FROM leave_requests
+                              WHERE kind = 'permission' AND status = 'approved' AND from_date BETWEEN ? AND ?`).all(from, to)) {
+    const k = `${p.user_id}|${p.from_date}`;
+    if (!permitsOf.has(k)) permitsOf.set(k, []);
+    permitsOf.get(k).push([at(p.from_date, p.from_time), at(p.from_date, p.to_time)]);
+  }
 
   const rows = [];
   for (const u of users) {
@@ -179,6 +204,7 @@ export function loadAttendance(db, { from, to, userId = null, now = Date.now() }
         maxExit: settings.max_exit_minutes,
         salary: u.salary,
         now,
+        permits: permitsOf.get(`${u.id}|${date}`) || [],
       });
       if (holidays.has(date)) day.status = day.presentMinutes ? 'off_worked' : 'holiday';
       rows.push({ userId: u.id, name: u.name, ...day });

@@ -111,12 +111,12 @@ export const ticketReply = ({ title, reply, link }) => card({
   quote: reply, link,
 });
 
-export const requestStatus = ({ id, kind, sku, qty, status, response, link }) => {
+export const requestStatus = ({ id, kind, sku, qty, status, response, link, by = '' }) => {
   const icons = { approved: '✅', rejected: '⛔', done: '📦', pending: '⏳' };
   const labels = { approved: 'تمت الموافقة', rejected: 'مرفوض', done: 'تم التنفيذ', pending: 'بانتظار المدير' };
   return card({
     icon: icons[status] || '📌', title: `طلبك رقم ${id}: ${labels[status] || status}`,
-    fields: [['النوع', kind === 'release' ? 'فسح لإرجاع منتجات' : 'طلب نواقص'], ['كود المنتج', sku], ['العدد', qty]],
+    fields: [['النوع', kind === 'release' ? 'فسح لإرجاع منتجات' : 'طلب نواقص'], ['كود المنتج', sku], ['العدد', qty], ...(by ? [['رفعه', by]] : [])],
     quote: response || undefined, link,
   });
 };
@@ -152,14 +152,134 @@ export const mgrTicket = ({ name, title, kind, high }) => card({ manager: true,
   fields: [['من', name], ['النوع', kind], ['العنوان', title]],
 });
 
-export const mgrRequest = ({ name, kind, sku, qty, reason }) => card({ manager: true,
+export const mgrRequest = ({ id, name, kind, sku, qty, reason }) => card({ manager: true,
   icon: kind === 'release' ? '↩️' : '📦', title: kind === 'release' ? 'طلب فسح لإرجاع منتجات' : 'طلب نواقص',
   fields: [['من', name], ['كود المنتج', sku], ['العدد', qty]],
   quote: reason,
-  steps: ['وافق أو ارفض من «الفسح والنواقص»'],
+  steps: [`للموافقة من هنا اكتب: *موافق ف${id}*`, `وللرفض: *رفض ف${id}* ثم السبب`, 'أو من «الفسح والنواقص» في النظام'],
 });
 
 export const test = ({ link }) => card({
   icon: '✨', title: 'الإشعارات تعمل',
   lines: ['هذي رسالة تجربة من نظام فريق وريف.', 'من الآن توصل المنبّهات والتنبيهات على هذا الشكل.'], link,
+});
+
+// ------------------------------------------------------------------ leave & permission requests
+export const LEAVE_KINDS = { leave: 'إجازة', sick: 'إجازة مرضية', permission: 'استئذان' };
+export const leaveWhen = (q) => (q.kind === 'permission'
+  ? `${q.from_date} من ${q.from_time} إلى ${q.to_time}`
+  : q.from_date === q.to_date ? q.from_date : `من ${q.from_date} إلى ${q.to_date}`);
+
+export const mgrLeaveRequest = ({ q, name }) => card({
+  manager: true, icon: q.kind === 'sick' ? '🤒' : q.kind === 'permission' ? '🕐' : '🌴', title: `طلب ${LEAVE_KINDS[q.kind]}`,
+  fields: [['من', name], ['الموعد', leaveWhen(q)]],
+  quote: q.reason || undefined,
+  steps: [`للموافقة من هنا اكتب: *موافق ج${q.id}*`, `وللرفض: *رفض ج${q.id}* ثم السبب`],
+});
+
+export const leaveDecision = ({ q, link }) => card({
+  icon: q.status === 'approved' ? '✅' : '⛔', title: `${LEAVE_KINDS[q.kind]}: ${q.status === 'approved' ? 'تمت الموافقة' : 'مرفوض'}`,
+  fields: [['الموعد', leaveWhen(q)]],
+  quote: q.response || undefined,
+  lines: q.status === 'approved' && q.kind !== 'permission' ? ['أيام الإجازة ما يُحسب فيها غياب ولا تأخير.'] : q.status === 'approved' ? ['وقت الاستئذان ما يُحسب تأخير ولا خروج.'] : [],
+  link,
+});
+
+// ------------------------------------------------------------------ WhatsApp commands
+const DECIDED = { approved: ['✅', 'تمت الموافقة'], rejected: ['⛔', 'تم الرفض'], done: ['📦', 'تم التنفيذ'] };
+export const commandDone = ({ what, status, name, detail }) => card({ manager: true,
+  icon: DECIDED[status][0], title: DECIDED[status][1],
+  fields: [['الطلب', what], ['الموظف', name], ...(detail ? [['التفاصيل', detail]] : [])],
+  lines: ['وصل الإشعار للموظف المعني.'],
+});
+
+export const commandFailed = ({ reason }) => card({ manager: true,
+  icon: '⚠️', title: 'ما تم التنفيذ', quote: reason,
+  steps: ['اكتب *طلبات* لعرض ما ينتظر ردك'],
+});
+
+export const pendingList = ({ reqs, leaves }) => card({ manager: true,
+  icon: '📌', title: 'بانتظار ردك',
+  lines: [
+    ...(reqs.length ? ['*الفسح والنواقص*', ...reqs.map((q) => `ف${q.id} · ${q.name} · ${q.kind === 'release' ? 'فسح' : 'نواقص'} ${q.sku} × ${q.quantity}`)] : []),
+    ...(reqs.length && leaves.length ? [''] : []),
+    ...(leaves.length ? ['*الإجازات والاستئذان*', ...leaves.map((q) => `ج${q.id} · ${q.name} · ${LEAVE_KINDS[q.kind]} ${leaveWhen(q)}`)] : []),
+    ...(!reqs.length && !leaves.length ? ['لا يوجد شيء بانتظارك 👌'] : []),
+  ],
+  steps: reqs.length || leaves.length ? ['للموافقة: *موافق ف12* أو *موافق ج3*', 'للرفض: *رفض ف12 السبب*', 'للتنفيذ: *تم ف12*'] : [],
+});
+
+// ------------------------------------------------------------------ manager: every action
+const PUNCH_ICON = { in: '🟢', out: '🔵', leave: '🚗', back: '↩️' };
+export const mgrPunch = ({ name, type, time, late = 0 }) => card({ manager: true,
+  icon: PUNCH_ICON[type] || '🕘', title: `${PUNCH[type]}: ${name}`,
+  fields: [['الوقت', time], ...(late ? [['تأخير', `${late} دقيقة`]] : [])],
+});
+
+export const mgrEntry = ({ name, date, lines }) => card({ manager: true,
+  icon: '📝', title: `تسجيل جديد من ${name}`,
+  fields: [['اليوم', date]],
+  lines: ['', ...lines],
+});
+
+export const mgrStock = ({ name, kind, party, invoice, lines }) => card({ manager: true,
+  icon: kind === 'merchant_return' ? '↩️' : '📥', title: kind === 'merchant_return' ? 'مرتجع للتاجر' : 'فاتورة بضاعة جديدة',
+  fields: [['سجّلها', name], ['التاجر', party], ...(invoice ? [['رقم الفاتورة', invoice]] : []), ['الأصناف', lines.length]],
+  quote: lines.slice(0, 12).map((l) => `${l.sku || l.description} × ${l.quantity}`).join('\n') + (lines.length > 12 ? `\n… و${lines.length - 12} أصناف أخرى` : ''),
+});
+
+export const RETURN_STATUS = { ready: 'جاهز للإرسال', sent: 'أُرسل للتاجر', settled: 'تمت التسوية' };
+export const mgrReturnStatus = ({ name, party, sku, qty, status, note }) => card({ manager: true,
+  icon: status === 'settled' ? '✅' : status === 'sent' ? '🚚' : '📦', title: `مرتجع التاجر: ${RETURN_STATUS[status]}`,
+  fields: [['التاجر', party], ['الصنف', `${sku} × ${qty}`], ['بواسطة', name]],
+  quote: note || undefined,
+});
+
+export const mgrTicketReply = ({ name, title, reply }) => card({ manager: true,
+  icon: '💬', title: `رد من ${name}`,
+  fields: [['التذكرة', title]], quote: reply,
+});
+
+export const mgrPasswordReset = ({ name }) => card({ manager: true,
+  icon: '🔑', title: 'استعادة كلمة مرور',
+  lines: [`${name} غيّر كلمة المرور برمز التحقق.`],
+});
+
+// ------------------------------------------------------------------ accounts
+export const otp = ({ code }) => card({
+  icon: '🔐', title: 'رمز التحقق',
+  lines: [`رمزك: *${code}*`, 'صالح لمدة 10 دقائق.'],
+  steps: ['لا تعطيه لأي أحد', 'إذا ما طلبته تجاهل الرسالة'],
+});
+
+export const backupCaption = ({ date }) => `🗄️ *نسخة احتياطية · ${date}*\nاحتفظ بالملف. لاسترجاعه ارفعه في Railway باسم wareef.db داخل /data.\n_وريف · لوحة المدير_`;
+
+// ------------------------------------------------------------------ month
+const MONTHS = ['يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو', 'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر'];
+export const monthName = (m) => `${MONTHS[Number(m.slice(5, 7)) - 1]} ${m.slice(0, 4)}`;
+
+export const payslip = ({ name, month, r, link }) => card({
+  icon: '🧾', title: `مسيّر راتب ${monthName(month)}`, hello: `${name}،`,
+  lines: ['تم اعتماد مسيّر الشهر، وهذي تفاصيل راتبك:'],
+  fields: [
+    ['الراتب', sar(r.salary)],
+    ...(r.workDays ? [['أيام الحضور', `${r.presentDays} من ${r.workDays}`]] : []),
+    ...(r.absentDays ? [['أيام الغياب', r.absentDays]] : []),
+    ...(r.lateMinutes ? [['دقائق التأخير', r.lateMinutes]] : []),
+    ...(r.deductions ? [['الخصومات', sar(r.deductions)]] : []),
+    ...(r.repayments ? [['أقساط السلف', sar(r.repayments)]] : []),
+    ['صافي الراتب', sar(r.net)],
+    ...(r.debtBalance ? [['المتبقي من السلف', sar(r.debtBalance)]] : []),
+  ],
+  steps: ['القسيمة كاملة في «سجلي» داخل النظام'], link,
+});
+
+export const award = ({ name, month, score, isYou, details }) => card({
+  icon: '🏆', title: `موظف شهر ${monthName(month)}`,
+  hello: isYou ? `مبروك ${name}! 🎉` : undefined,
+  lines: isYou
+    ? ['أنت موظف الشهر بجدارة. شكراً على التزامك وجهدك، وننتظر منك الأكثر 🤍']
+    : [`نبارك لزميلنا *${name}* لقب موظف الشهر 🎉`, 'المنافسة مفتوحة للشهر الجاي، الالتزام والإنجاز هما الطريق.'],
+  fields: [['التقييم', `${score} من 100`]],
+  quote: details || undefined,
 });

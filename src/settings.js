@@ -32,6 +32,9 @@ export const DEFAULTS = {
     { key: 'daily_edits', name: 'التعديلات اليومية', note: false },
     { key: 'pending_issues', name: 'الإشكاليات المعلّقة', note: true },
     { key: 'pending_chats', name: 'دردشات معلّقة بدون رد', note: false },
+    { key: 'late_orders', name: 'الطلبات المتأخرة', note: false },
+    { key: 'late_available', name: 'منها متوفرة', note: false },
+    { key: 'late_unavailable', name: 'منها غير متوفرة', note: true },
   ],
   notify: {
     manager_phone: '',
@@ -44,6 +47,10 @@ export const DEFAULTS = {
     staff_account: true,         // tell employees about deductions, loans, replies, request decisions
     daily_summary: true,
     summary_time: '21:30',
+    alert_all: true,             // the manager hears about every action: punches, entries, tickets, replies...
+    monthly_auto: true,          // on the 1st: monthly report to the manager, employee of the month to everyone
+    daily_backup: true,          // a copy of the database to the manager's WhatsApp every night
+    backup_time: '23:30',
   },
   channels: [
     { key: 'salla', name: 'سلة' },
@@ -127,6 +134,10 @@ export function saveSettings(db, patch) {
       staff_account: !!n.staff_account,
       daily_summary: !!n.daily_summary,
       summary_time: n.summary_time || '21:30',
+      alert_all: !!(n.alert_all ?? true),
+      monthly_auto: !!(n.monthly_auto ?? true),
+      daily_backup: !!(n.daily_backup ?? true),
+      backup_time: HHMM.test(n.backup_time || '') ? n.backup_time : '23:30',
     };
   }
   if ('metrics' in patch) {
@@ -161,6 +172,7 @@ export function permissionList(settings) {
     { key: 'orders', name: 'تسجيل طلبات القنوات (سلة، تابي، تمارا...)' },
     { key: 'stock', name: 'فواتير البضائع الجديدة ومرتجعات التجار' },
     { key: 'requests', name: 'رفع طلبات الفسح والنواقص' },
+    { key: 'supervisor', name: 'مشرف: يتابع الحضور والعمليات والطلبات والتذاكر، بدون الرواتب والخصومات والإعدادات' },
     ...settings.metrics.map((m) => ({ key: `m:${m.key}`, name: `رقم يومي: ${m.name}` })),
   ];
 }

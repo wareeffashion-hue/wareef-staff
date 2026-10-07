@@ -1,4 +1,5 @@
 import { createServer } from 'node:http';
+import { createHash, randomInt } from 'node:crypto';
 import { readFile, mkdir, readdir, rm } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { extname, join, normalize, dirname } from 'node:path';
@@ -7,7 +8,7 @@ import { config, DAY } from './config.js';
 import { openDb, audit, tx } from './db.js';
 import { HttpError, Router, clientIp, parseJson, rateLimiter, readBody, send } from './http.js';
 import {
-  bootstrap, can, currentUser, deviceId, hashPassword, login, logout, requireAdmin, requireOps, requirePerm,
+  bootstrap, can, isManager, requireManager, currentUser, deviceId, hashPassword, login, logout, requireAdmin, requireOps, requirePerm,
   sessionCookie, validatePassword, validUsername, verifyPassword,
 } from './auth.js';
 import { getSettings, saveSettings, allPeriods, permissionList } from './settings.js';
@@ -19,10 +20,15 @@ import {
   opsRows, opsSection, payroll, payrollSection, punchesSection, requestRows, requestsSection, stockRows, stockSection, ticketRows, ticketsSection, toCsv,
 } from './reports.js';
 import { renderDailyReport } from './print.js';
-import { waAutoStart, waLogout, waQrSvg, waStart, waStatus } from './wa.js';
-import { appLink, flush, normalizePhone, notifyEmployee, notifyManager, providerStatus, queue, startNotifier, dailySummary } from './notify.js';
+import { waAutoStart, waLogout, waOnMessage, waQrSvg, waStart, waStatus } from './wa.js';
+import { appLink, flush, normalizePhone, notifyActivity, notifyEmployee, notifyManager, providerStatus, queue, startNotifier, dailySummary } from './notify.js';
+import { decideLeave, decideRequest } from './decisions.js';
+import { announceAward, assertOpen, awardOf, closeMonth, closedMonth, monthlyData, monthlyTick, payrollFor, reopenMonth, sendPayslips } from './monthly.js';
+import { performance } from './performance.js';
+import { handleIncoming } from './commands.js';
+import { renderMonthlyReport, renderPayslip } from './print.js';
 import * as msg from './messages.js';
-import { DEDUCTION_LABELS, TICKET_KINDS } from './reports.js';
+import { DEDUCTION_LABELS, TICKET_KINDS, PUNCH_LABELS } from './reports.js';
 
 const PUBLIC_DIR = fileURLToPath(new URL('../public/', import.meta.url));
 const MIME = {
@@ -62,6 +68,11 @@ const csv = (res, name, sections) => send(res, 200, toCsv(sections), {
   'Content-Type': 'text/csv; charset=utf-8',
   'Content-Disposition': `attachment; filename="${name}.csv"`,
 });
+
+export { decideLeave };
+
+/** Supervisors see attendance without the suggested deduction (salary-derived). */
+const hideMoney = (user, rows) => (user.role === 'admin' ? rows : rows.map(({ suggested, ...r }) => r));
 
 function userView(u) {
   return {
@@ -104,7 +115,7 @@ export function createApp(db) {
   r.get('/api/me', ({ user }) => {
     const s = getSettings(db);
     return {
-      user: { id: user.id, name: user.name, username: user.username, role: user.role, perms: user.perms },
+      user: { id: user.id, name: user.name, username: user.username, role: user.role, perms: user.perms, manager: isManager(user) },
       today: localDate(), now: Date.now(), tzOffset: config.tzOffsetMinutes,
       channels: s.channels, metrics: s.metrics, periods: allPeriods(s.schedule),
     };
@@ -118,6 +129,46 @@ export function createApp(db) {
     return { ok: true };
   }, { auth: true });
 
+  // Forgotten password: a 6-digit code to the WhatsApp number on file, valid 10 minutes, 5 tries.
+  const resetLimit = rateLimiter({ limit: 10, windowMs: 15 * 60_000 });
+  const otpHash = (userId, code) => createHash('sha256').update(`${userId}:${code}`).digest('hex');
+  const resetUser = (username) => db.prepare('SELECT * FROM users WHERE username = ? AND active = 1').get(String(username || '').trim().toLowerCase());
+  r.post('/api/reset/request', async ({ req }) => {
+    if (!resetLimit(clientIp(req))) throw new HttpError(429, 'محاولات كثيرة. حاول بعد ربع ساعة');
+    const u = resetUser(parseJson(await readBody(req)).username);
+    const phone = u ? (u.role === 'admin' ? getSettings(db).notify.manager_phone : u.phone) : '';
+    if (u && phone) {
+      const code = String(randomInt(0, 1_000_000)).padStart(6, '0');
+      db.prepare(`INSERT INTO otp_codes (user_id, code_hash, expires_at, attempts) VALUES (?, ?, ?, 0)
+                  ON CONFLICT(user_id) DO UPDATE SET code_hash = excluded.code_hash, expires_at = excluded.expires_at, attempts = 0`)
+        .run(u.id, otpHash(u.id, code), Date.now() + 10 * 60_000);
+      queue(db, { to: phone, body: msg.otp({ code }), kind: 'otp', userId: u.id });
+      flush(db).catch(() => {});
+    }
+    // Same answer either way, so the form can't be used to discover usernames.
+    return { ok: true };
+  });
+  r.post('/api/reset/confirm', async ({ req }) => {
+    if (!resetLimit(clientIp(req))) throw new HttpError(429, 'محاولات كثيرة. حاول بعد ربع ساعة');
+    const b = parseJson(await readBody(req));
+    const u = resetUser(b.username);
+    const row = u && db.prepare('SELECT * FROM otp_codes WHERE user_id = ?').get(u.id);
+    if (!row || row.expires_at < Date.now() || row.attempts >= 5) throw new HttpError(400, 'الرمز منتهي. اطلب رمزاً جديداً');
+    if (otpHash(u.id, String(b.code || '').replace(/\D/g, '')) !== row.code_hash) {
+      db.prepare('UPDATE otp_codes SET attempts = attempts + 1 WHERE user_id = ?').run(u.id);
+      throw new HttpError(400, 'الرمز غير صحيح');
+    }
+    validatePassword(b.password);
+    tx(db, () => {
+      db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hashPassword(b.password), u.id);
+      db.prepare('DELETE FROM otp_codes WHERE user_id = ?').run(u.id);
+      db.prepare('DELETE FROM sessions WHERE user_id = ?').run(u.id);
+      audit(db, u.id, 'password.reset', u.id, '');
+    });
+    if (u.role !== 'admin') notifyActivity(db, 'password_reset', msg.mgrPasswordReset({ name: u.name }));
+    return { ok: true };
+  });
+
   // ------------------------------------------------------------ employee self-service
   r.get('/api/my/today', ({ user }) => myToday(db, user), { auth: true });
   r.post('/api/punch', async ({ req, res, user }) => {
@@ -130,7 +181,9 @@ export function createApp(db) {
       notifyManager(db, 'flag', msg.mgrFlag({ name: user.name, type: p.type, time: localTime(p.ts), reasons: serious.map((f) => FLAG_LABELS[f]) }));
     }
     if (p.type === 'leave') notifyManager(db, 'leave', msg.mgrLeave({ name: user.name, time: localTime(p.ts), reason: text(body.note, 200) }));
-    send(res, 200, myToday(db, user), dev.cookie ? { 'Set-Cookie': dev.cookie } : {});
+    const today = myToday(db, user);
+    if (p.type !== 'leave') notifyActivity(db, 'punch', msg.mgrPunch({ name: user.name, type: p.type, time: localTime(p.ts), late: p.type === 'in' ? today.day.lateMinutes : 0 }));
+    send(res, 200, today, dev.cookie ? { 'Set-Cookie': dev.cookie } : {});
   }, { auth: true });
   r.get('/api/my/month', ({ url, user }) => {
     const month = needMonth(url.searchParams.get('month'));
@@ -140,13 +193,14 @@ export function createApp(db) {
     return {
       month, days: days.map(({ suggested, ...d }) => d), summary: summarize(days).map(({ suggested, ...s }) => s)[0] || null,
       deductions: deductionRows(db, from, to, user.id), debts: debtRows(db, user.id), balance: balance?.balance || 0,
+      closed: !!closedMonth(db, month), award: awardOf(db, month),
     };
   }, { auth: true });
 
   // ------------------------------------------------------------ tickets
   r.get('/api/tickets', ({ url, user }) => {
     const { from, to } = range(url, 60);
-    const userId = user.role === 'admin' ? (Number(url.searchParams.get('user_id')) || null) : user.id;
+    const userId = isManager(user) ? (Number(url.searchParams.get('user_id')) || null) : user.id;
     const status = ['open', 'in_progress', 'closed'].includes(url.searchParams.get('status')) ? url.searchParams.get('status') : null;
     return { tickets: ticketRows(db, { from, to, userId, status }) };
   }, { auth: true });
@@ -159,14 +213,14 @@ export function createApp(db) {
     const now = Date.now();
     const res = db.prepare('INSERT INTO tickets (user_id, date, kind, title, body, priority, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
       .run(user.id, localDate(now), kind, title, text(b.body, 4000), priority, now, now);
-    if (user.role !== 'admin' && (kind !== 'achievement' || priority === 'high')) {
+    if (!isManager(user)) {
       notifyManager(db, 'ticket', msg.mgrTicket({ name: user.name, title, kind: TICKET_KINDS[kind], high: priority === 'high' }));
     }
     return { id: Number(res.lastInsertRowid) };
   }, { auth: true });
   const ticketFor = (id, user) => {
     const t = db.prepare('SELECT t.*, u.name AS user_name FROM tickets t JOIN users u ON u.id = t.user_id WHERE t.id = ?').get(Number(id));
-    if (!t || (user.role !== 'admin' && t.user_id !== user.id)) throw new HttpError(404, 'التذكرة غير موجودة');
+    if (!t || (!isManager(user) && t.user_id !== user.id)) throw new HttpError(404, 'التذكرة غير موجودة');
     return t;
   };
   r.get('/api/tickets/:id', ({ params, user }) => {
@@ -180,12 +234,13 @@ export function createApp(db) {
     if (!body) throw new HttpError(400, 'اكتب الرد');
     const now = Date.now();
     db.prepare('INSERT INTO ticket_replies (ticket_id, user_id, body, created_at) VALUES (?, ?, ?, ?)').run(t.id, user.id, body, now);
-    if (user.role === 'admin' && t.user_id !== user.id) notifyEmployee(db, t.user_id, 'ticket_reply', msg.ticketReply({ title: t.title, reply: body.slice(0, 500), link: appLink(db) }));
+    if (isManager(user) && t.user_id !== user.id) notifyEmployee(db, t.user_id, 'ticket_reply', msg.ticketReply({ title: t.title, reply: body.slice(0, 500), link: appLink(db) }));
+    else if (!isManager(user)) notifyActivity(db, 'ticket_reply', msg.mgrTicketReply({ name: user.name, title: t.title, reply: body.slice(0, 500) }));
     db.prepare('UPDATE tickets SET updated_at = ? WHERE id = ?').run(now, t.id);
     return { ok: true };
   }, { auth: true });
   r.put('/api/tickets/:id', async ({ req, params, user }) => {
-    requireAdmin(user);
+    requireManager(user);
     const t = ticketFor(params.id, user);
     const status = parseJson(await readBody(req)).status;
     if (!['open', 'in_progress', 'closed'].includes(status)) throw new HttpError(400, 'حالة غير معروفة');
@@ -210,6 +265,7 @@ export function createApp(db) {
     const b = parseJson(await readBody(req));
     const { channels, metrics } = getSettings(db);
     const now = Date.now();
+    const said = [];
     tx(db, () => {
       if (b.channels !== undefined || b.notes !== undefined) {
         requirePerm(user, 'orders');
@@ -227,6 +283,10 @@ export function createApp(db) {
                     updated_by = excluded.updated_by, updated_at = excluded.updated_at`)
           .run(date, JSON.stringify(ch), notes, user.id, now);
         if (prev) audit(db, user.id, 'ops.update', null, { date });
+        if (b.channels) {
+          const total = channels.reduce((t, c) => t + (Number(ch[c.key]?.count) || 0), 0);
+          said.push(`▫️ طلبات القنوات: *${total}*  (${channels.filter((c) => ch[c.key]?.count).map((c) => `${c.name} ${ch[c.key].count}`).join('، ') || '—'})`);
+        }
       }
       for (const [key, v] of Object.entries(b.metrics || {})) {
         const m = metrics.find((x) => x.key === key);
@@ -238,8 +298,12 @@ export function createApp(db) {
                     updated_by = excluded.updated_by, updated_at = excluded.updated_at`)
           .run(date, key, num(v?.value || 0, 0, 1e6), m.note ? text(v?.note, 1000) : '', user.id, now);
         if (prev) audit(db, user.id, 'metric.update', null, { date, key, from: prev.value, to: num(v?.value || 0, 0, 1e6) });
+        if (!prev || prev.value !== num(v?.value || 0, 0, 1e6) || (m.note && v?.note)) {
+          said.push(`▫️ ${m.name}: *${num(v?.value || 0, 0, 1e6)}*${prev && prev.value !== num(v?.value || 0, 0, 1e6) ? ` (كان ${prev.value})` : ''}${m.note && v?.note ? `\n> ${text(v.note, 300).replace(/\n/g, '\n> ')}` : ''}`);
+        }
       }
     });
+    if (said.length && !isManager(user)) notifyActivity(db, 'entry', msg.mgrEntry({ name: user.name, date, lines: said }));
     return { ok: true };
   }, { auth: true });
   r.post('/api/stock', async ({ req, user }) => {
@@ -252,21 +316,45 @@ export function createApp(db) {
     const party = text(b.party, 120);
     const invoice = text(b.invoice_no, 60);
     if (!party) throw new HttpError(400, 'اكتب اسم التاجر');
-    const ins = db.prepare(`INSERT INTO stock_moves (date, kind, party, invoice_no, sku, description, quantity, value, note, created_by, created_at)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    const ins = db.prepare(`INSERT INTO stock_moves (date, kind, party, invoice_no, sku, description, quantity, value, note, created_by, created_at, status)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
     const ids = tx(db, () => lines.slice(0, 100).map((l) => {
       const sku = text(l.sku, 60);
       const qty = num(l.quantity || 0, 0, 1e7);
       if (!sku && !text(l.description)) throw new HttpError(400, 'اكتب كود المنتج لكل صنف');
       if (!qty) throw new HttpError(400, `اكتب العدد للصنف ${sku}`);
-      return Number(ins.run(date, kind, party, invoice, sku, text(l.description, 300), qty, num(l.value || 0, 0, 1e9), text(b.note, 500), user.id, Date.now()).lastInsertRowid);
+      return Number(ins.run(date, kind, party, invoice, sku, text(l.description, 300), qty, num(l.value || 0, 0, 1e9), text(b.note, 500), user.id, Date.now(), kind === 'merchant_return' ? 'ready' : '').lastInsertRowid);
     }));
+    if (!isManager(user)) {
+      notifyActivity(db, 'stock', msg.mgrStock({ name: user.name, kind, party, invoice,
+        lines: lines.slice(0, 100).map((l) => ({ sku: text(l.sku, 60), description: text(l.description, 300), quantity: num(l.quantity || 0, 0, 1e7) })) }));
+    }
     return { ids };
+  }, { auth: true });
+  // Merchant returns: ready → sent → settled.
+  r.put('/api/stock/:id/status', async ({ req, params, user }) => {
+    if (!isManager(user)) requirePerm(user, 'stock');
+    const row = db.prepare("SELECT * FROM stock_moves WHERE id = ? AND kind = 'merchant_return'").get(Number(params.id));
+    if (!row) throw new HttpError(404, 'المرتجع غير موجود');
+    const b = parseJson(await readBody(req));
+    const status = ['ready', 'sent', 'settled'].includes(b.status) ? b.status : null;
+    if (!status) throw new HttpError(400, 'حالة غير معروفة');
+    const note = b.note !== undefined ? text(b.note, 300) : row.status_note;
+    // A whole invoice moves together unless one line is asked for.
+    const ids = b.all ? db.prepare("SELECT id FROM stock_moves WHERE kind = 'merchant_return' AND date = ? AND party = ? AND invoice_no = ?").all(row.date, row.party, row.invoice_no).map((x) => x.id) : [row.id];
+    const upd = db.prepare('UPDATE stock_moves SET status = ?, status_note = ?, status_at = ? WHERE id = ?');
+    tx(db, () => { for (const id of ids) upd.run(status, note, Date.now(), id); });
+    audit(db, user.id, 'stock.status', null, { ids, status });
+    if (status !== row.status) {
+      const qty = db.prepare(`SELECT SUM(quantity) q FROM stock_moves WHERE id IN (${ids.map(() => '?').join(',')})`).get(...ids).q;
+      notifyActivity(db, 'stock_status', msg.mgrReturnStatus({ name: user.name, party: row.party, sku: ids.length > 1 ? `${ids.length} أصناف` : row.sku, qty, status, note }));
+    }
+    return { ok: true, ids };
   }, { auth: true });
 
   // ------------------------------------------------------------ release / shortage requests
   r.get('/api/requests', ({ url, user }) => {
-    const isAdmin = user.role === 'admin';
+    const isAdmin = isManager(user);
     if (!isAdmin) requirePerm(user, 'requests');
     const status = ['pending', 'approved', 'rejected', 'done'].includes(url.searchParams.get('status')) ? url.searchParams.get('status') : null;
     const where = [];
@@ -292,27 +380,16 @@ export function createApp(db) {
     const qty = num(b.quantity, 1, 1e6);
     const res = db.prepare('INSERT INTO requests (user_id, date, kind, sku, quantity, reason, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
       .run(user.id, localDate(now), kind, sku, qty, reason, now, now);
-    notifyManager(db, 'request', msg.mgrRequest({ name: user.name, kind, sku, qty, reason: reason.slice(0, 300) }));
+    notifyManager(db, 'request', msg.mgrRequest({ id: Number(res.lastInsertRowid), name: user.name, kind, sku, qty, reason: reason.slice(0, 300) }));
     return { id: Number(res.lastInsertRowid) };
   }, { auth: true });
   r.put('/api/requests/:id', async ({ req, params, user }) => {
-    requireAdmin(user);
-    const q = db.prepare('SELECT * FROM requests WHERE id = ?').get(Number(params.id));
-    if (!q) throw new HttpError(404, 'الطلب غير موجود');
+    requireManager(user);
     const b = parseJson(await readBody(req));
-    const status = ['pending', 'approved', 'rejected', 'done'].includes(b.status) ? b.status : q.status;
-    db.prepare('UPDATE requests SET status = ?, response = ?, handled_by = ?, updated_at = ? WHERE id = ?')
-      .run(status, b.response !== undefined ? text(b.response, 1000) : q.response, user.id, Date.now(), q.id);
-    audit(db, user.id, 'request.update', q.user_id, { id: q.id, status });
-    if (status !== q.status) {
-      const label = { pending: 'بانتظار المدير', approved: 'تمت الموافقة', rejected: 'مرفوض', done: 'تم التنفيذ' }[status];
-      const resp = b.response !== undefined ? text(b.response, 300) : q.response;
-      notifyEmployee(db, q.user_id, 'request_status', msg.requestStatus({ id: q.id, kind: q.kind, sku: q.sku, qty: q.quantity, status, response: resp, link: appLink(db) }));
-    }
-    return { ok: true };
+    return decideRequest(db, user, Number(params.id), b.status, b.response);
   }, { auth: true });
   r.delete('/api/stock/:id', ({ params, user }) => {
-    requireAdmin(user);
+    requireManager(user);
     const row = db.prepare('SELECT * FROM stock_moves WHERE id = ?').get(Number(params.id));
     if (!row) throw new HttpError(404, 'السجل غير موجود');
     db.prepare('DELETE FROM stock_moves WHERE id = ?').run(row.id);
@@ -320,23 +397,72 @@ export function createApp(db) {
     return { ok: true };
   }, { auth: true });
 
+  // ------------------------------------------------------------ leave & permission requests
+  r.get('/api/leaves', ({ url, user }) => {
+    const all = isManager(user);
+    const status = ['pending', 'approved', 'rejected'].includes(url.searchParams.get('status')) ? url.searchParams.get('status') : null;
+    const where = [];
+    const args = [];
+    if (!all) { where.push('l.user_id = ?'); args.push(user.id); }
+    if (status) { where.push('l.status = ?'); args.push(status); }
+    return {
+      leaves: db.prepare(`SELECT l.*, u.name AS user_name, h.name AS handled_by_name FROM leave_requests l JOIN users u ON u.id = l.user_id
+                          LEFT JOIN users h ON h.id = l.handled_by ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+                          ORDER BY (l.status = 'pending') DESC, l.from_date DESC, l.id DESC LIMIT 300`).all(...args),
+    };
+  }, { auth: true });
+  r.post('/api/leaves', async ({ req, user }) => {
+    if (user.role === 'admin') throw new HttpError(400, 'طلبات الإجازة للموظفين');
+    const b = parseJson(await readBody(req));
+    const kind = ['leave', 'sick', 'permission'].includes(b.kind) ? b.kind : null;
+    if (!kind) throw new HttpError(400, 'اختر نوع الطلب');
+    const from = needDate(b.from_date);
+    const to = kind === 'permission' ? from : needDate(b.to_date, from);
+    if (to < from || addDays(from, 30) < to) throw new HttpError(400, 'المدة غير صحيحة (30 يوماً كحد أقصى)');
+    if (from < addDays(localDate(), -7)) throw new HttpError(400, 'لا يمكن طلب إجازة لتاريخ مضى عليه أكثر من أسبوع');
+    let fromTime = '';
+    let toTime = '';
+    if (kind === 'permission') {
+      fromTime = String(b.from_time || '');
+      toTime = String(b.to_time || '');
+      if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(fromTime) || !/^([01]\d|2[0-3]):[0-5]\d$/.test(toTime) || fromTime >= toTime) throw new HttpError(400, 'حدّد وقت بداية ونهاية الاستئذان');
+    }
+    const reason = text(b.reason, 500);
+    if (!reason) throw new HttpError(400, 'اكتب السبب');
+    const now = Date.now();
+    const id = Number(db.prepare(`INSERT INTO leave_requests (user_id, kind, from_date, to_date, from_time, to_time, reason, created_at, updated_at)
+                                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(user.id, kind, from, to, fromTime, toTime, reason, now, now).lastInsertRowid);
+    const q = db.prepare('SELECT * FROM leave_requests WHERE id = ?').get(id);
+    notifyManager(db, 'leave_request', msg.mgrLeaveRequest({ q, name: user.name }));
+    return { id };
+  }, { auth: true });
+  r.put('/api/leaves/:id', async ({ req, params, user }) => {
+    requireManager(user);
+    const b = parseJson(await readBody(req));
+    return decideLeave(db, user, Number(params.id), b.status, b.response);
+  }, { auth: true });
+
   // ------------------------------------------------------------ manager: attendance
   r.get('/api/dashboard', ({ url, user }) => {
-    requireAdmin(user);
+    requireManager(user);
     const date = needDate(url.searchParams.get('date'), localDate());
     const rep = dailyReport(db, date);
     const openTickets = db.prepare("SELECT COUNT(*) n FROM tickets WHERE status != 'closed'").get().n;
     const pendingRequests = db.prepare("SELECT COUNT(*) n FROM requests WHERE status = 'pending'").get().n;
-    return { ...rep, openTickets, pendingRequests, flagLabels: FLAG_LABELS, now: Date.now() };
+    const money = user.role === 'admin';
+    return {
+      ...rep, attendance: hideMoney(user, rep.attendance), deductions: money ? rep.deductions : [], debts: money ? rep.debts : [],
+      openTickets, pendingRequests, flagLabels: FLAG_LABELS, now: Date.now(),
+    };
   }, { auth: true });
   r.get('/api/attendance', ({ url, user }) => {
-    requireAdmin(user);
+    requireManager(user);
     const { from, to } = range(url, 7);
     const rows = loadAttendance(db, { from, to, userId: Number(url.searchParams.get('user_id')) || null });
-    return { from, to, rows, summary: summarize(rows) };
+    return { from, to, rows: hideMoney(user, rows), summary: hideMoney(user, summarize(rows)) };
   }, { auth: true });
   r.get('/api/punches', ({ url, user }) => {
-    requireAdmin(user);
+    requireManager(user);
     const date = needDate(url.searchParams.get('date'), localDate());
     const userId = Number(url.searchParams.get('user_id')) || null;
     const rows = db.prepare(`SELECT p.*, u.name AS user_name, c.name AS created_by_name FROM punches p JOIN users u ON u.id = p.user_id
@@ -345,16 +471,16 @@ export function createApp(db) {
     return { punches: rows };
   }, { auth: true });
   r.post('/api/punches', async ({ req, user }) => {
-    requireAdmin(user);
+    requireManager(user);
     return { id: managerPunch(db, user, parseJson(await readBody(req))) };
   }, { auth: true });
   r.delete('/api/punches/:id', async ({ req, params, user }) => {
-    requireAdmin(user);
+    requireManager(user);
     voidPunch(db, user, params.id, parseJson(await readBody(req)).reason);
     return { ok: true };
   }, { auth: true });
   r.get('/api/flags', ({ url, user }) => {
-    requireAdmin(user);
+    requireManager(user);
     const { from, to } = range(url, 14);
     const punches = db.prepare(`SELECT p.id, p.user_id, p.date, p.ts, p.type, p.note, p.source, p.flags, p.ip, p.lat, p.lng, p.voided, u.name AS user_name
                                 FROM punches p JOIN users u ON u.id = p.user_id WHERE p.date BETWEEN ? AND ? AND p.flags != '[]' ORDER BY p.ts DESC`)
@@ -367,7 +493,7 @@ export function createApp(db) {
     return { punches, days, audit: auditRows, labels: FLAG_LABELS };
   }, { auth: true });
   r.get('/api/excuses', ({ url, user }) => {
-    requireAdmin(user);
+    requireManager(user);
     const { from, to } = range(url, 60);
     return {
       excuses: db.prepare(`SELECT e.*, u.name AS user_name FROM excuses e LEFT JOIN users u ON u.id = e.user_id
@@ -375,7 +501,7 @@ export function createApp(db) {
     };
   }, { auth: true });
   r.post('/api/excuses', async ({ req, user }) => {
-    requireAdmin(user);
+    requireManager(user);
     const b = parseJson(await readBody(req));
     const kind = ['leave', 'sick', 'holiday', 'excused'].includes(b.kind) ? b.kind : null;
     if (!kind) throw new HttpError(400, 'اختر نوع الإجازة');
@@ -394,7 +520,7 @@ export function createApp(db) {
     return { ok: true };
   }, { auth: true });
   r.delete('/api/excuses/:id', ({ params, user }) => {
-    requireAdmin(user);
+    requireManager(user);
     const e = db.prepare('SELECT * FROM excuses WHERE id = ?').get(Number(params.id));
     if (!e) throw new HttpError(404, 'غير موجود');
     db.prepare('DELETE FROM excuses WHERE id = ?').run(e.id);
@@ -416,6 +542,7 @@ export function createApp(db) {
     const category = ['late', 'absence', 'early', 'exit', 'violation', 'damage', 'other'].includes(b.category) ? b.category : 'other';
     const amount = num(b.amount, 0.01, 1e6);
     const date = needDate(b.date, localDate());
+    assertOpen(db, date);
     const res = db.prepare('INSERT INTO deductions (user_id, date, amount, category, reason, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
       .run(userId, date, amount, category, text(b.reason, 300), user.id, Date.now());
     audit(db, user.id, 'deduction.add', userId, { date, amount, category, reason: text(b.reason, 300) });
@@ -426,6 +553,7 @@ export function createApp(db) {
     requireAdmin(user);
     const d = db.prepare('SELECT * FROM deductions WHERE id = ?').get(Number(params.id));
     if (!d) throw new HttpError(404, 'الخصم غير موجود');
+    assertOpen(db, d.date);
     db.prepare('DELETE FROM deductions WHERE id = ?').run(d.id);
     audit(db, user.id, 'deduction.delete', d.user_id, d);
     return { ok: true };
@@ -442,6 +570,7 @@ export function createApp(db) {
     const kind = b.kind === 'repayment' ? 'repayment' : 'loan';
     const amount = num(b.amount, 0.01, 1e7);
     const date = needDate(b.date, localDate());
+    assertOpen(db, date);
     const res = db.prepare('INSERT INTO debts (user_id, date, kind, amount, note, from_salary, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
       .run(userId, date, kind, amount, text(b.note, 300), b.from_salary === false ? 0 : 1, user.id, Date.now());
     audit(db, user.id, `debt.${kind}`, userId, { date, amount, note: text(b.note, 300) });
@@ -453,6 +582,7 @@ export function createApp(db) {
     requireAdmin(user);
     const d = db.prepare('SELECT * FROM debts WHERE id = ?').get(Number(params.id));
     if (!d) throw new HttpError(404, 'السجل غير موجود');
+    assertOpen(db, d.date);
     db.prepare('DELETE FROM debts WHERE id = ?').run(d.id);
     audit(db, user.id, 'debt.delete', d.user_id, d);
     return { ok: true };
@@ -460,7 +590,56 @@ export function createApp(db) {
   r.get('/api/payroll', ({ url, user }) => {
     requireAdmin(user);
     const month = needMonth(url.searchParams.get('month'));
-    return { month, rows: payroll(db, month) };
+    return { month, ...payrollFor(db, month) };
+  }, { auth: true });
+  r.post('/api/payroll/close', async ({ req, user }) => {
+    requireAdmin(user);
+    const b = parseJson(await readBody(req));
+    return closeMonth(db, user, needMonth(b.month), { send: b.send !== false });
+  }, { auth: true });
+  r.post('/api/payroll/payslips', async ({ req, user }) => {
+    requireAdmin(user);
+    return { ok: true, sent: sendPayslips(db, needMonth(parseJson(await readBody(req)).month)) };
+  }, { auth: true });
+  r.delete('/api/payroll/close/:month', ({ params, user }) => {
+    requireAdmin(user);
+    return reopenMonth(db, user, needMonth(params.month));
+  }, { auth: true });
+
+  // ------------------------------------------------------------ performance & analytics
+  r.get('/api/performance', ({ url, user }) => {
+    requireManager(user);
+    const month = needMonth(url.searchParams.get('month'));
+    return { month, rows: performance(db, month), award: awardOf(db, month) };
+  }, { auth: true });
+  r.post('/api/awards', async ({ req, user }) => {
+    requireAdmin(user);
+    const b = parseJson(await readBody(req));
+    return announceAward(db, needMonth(b.month), { userId: b.user_id || null });
+  }, { auth: true });
+  r.get('/api/analytics', ({ url, user }) => {
+    requireManager(user);
+    const { from, to } = range(url, 30);
+    if (addDays(from, 400) < to) throw new HttpError(400, 'المدة طويلة جداً');
+    const s = getSettings(db);
+    const ops = new Map(opsRows(db, from, to).map((d) => [d.date, d]));
+    const att = loadAttendance(db, { from, to });
+    const days = [];
+    for (let d = from; d <= to; d = addDays(d, 1)) {
+      const o = ops.get(d);
+      const a = att.filter((x) => x.date === d);
+      days.push({
+        date: d,
+        orders: o?.totalOrders || 0, amount: o?.totalAmount || 0,
+        channels: Object.fromEntries(s.channels.map((c) => [c.key, Number(o?.channels[c.key]?.count) || 0])),
+        metrics: Object.fromEntries(s.metrics.map((m) => [m.key, o?.metrics[m.key] ? Number(o.metrics[m.key].value) : null])),
+        scheduled: a.filter((x) => x.scheduledMinutes > 0 && x.status !== 'excused').length,
+        present: a.filter((x) => ['present', 'late', 'partial', 'off_worked'].includes(x.status)).length,
+        absent: a.filter((x) => x.status === 'absent').length,
+        lateMinutes: a.reduce((t, x) => t + x.lateMinutes, 0),
+      });
+    }
+    return { from, to, days, channels: s.channels, metrics: s.metrics };
   }, { auth: true });
 
   // ------------------------------------------------------------ manager: staff & settings
@@ -558,6 +737,11 @@ export function createApp(db) {
         ['للمدير: لم يصل', msg.mgrLate({ name: 'منذر', period: 'الفترة الصباحية', start: '07:00', now: '07:10' })],
         ['للمدير: بصمة مشبوهة', msg.mgrFlag({ name: 'علي', type: 'in', time: '07:02', reasons: ['نفس الجهاز استُخدم لبصمة موظف آخر'] })],
         ['للمدير: طلب فسح', msg.mgrRequest({ name: 'باسم', kind: 'release', sku: 'AB-1042', qty: 3, reason: 'عيب مصنعي في الخياطة' })],
+        ['للمدير: طلب إجازة', msg.mgrLeaveRequest({ name: 'صفوان', q: { id: 3, kind: 'leave', from_date: today, to_date: addDays(today, 1), reason: 'ظرف عائلي' } })],
+        ['للمدير: كل حركة', msg.mgrEntry({ name: 'باسم', date: today, lines: ['▫️ الطلبات المتأخرة: *7*', '▫️ منها متوفرة: *5*', '▫️ منها غير متوفرة: *2*\n> مقاس 56 أسود نافد عند المورد'] })],
+        ['رد على أمر واتساب', msg.commandDone({ what: 'طلب الفسح رقم 12', status: 'approved', name: 'باسم', detail: 'AB-1042 × 3' })],
+        ['قسيمة الراتب', msg.payslip({ name: 'علي', month: today.slice(0, 7), r: { salary: 4000, presentDays: 25, workDays: 26, absentDays: 1, lateMinutes: 35, deductions: 150, repayments: 500, net: 3350, debtBalance: 1000 }, link })],
+        ['موظف الشهر', msg.award({ name: 'عبدالله', month: today.slice(0, 7), score: 96, isYou: false })],
         ['الملخص اليومي', dailySummary(db, today, loadAttendance(db, { from: today, to: today }))],
       ],
     };
@@ -583,19 +767,24 @@ export function createApp(db) {
   }, { auth: true });
 
   // ------------------------------------------------------------ exports
-  const exp = (path, fn) => r.get(path, ({ url, res, user }) => { requireAdmin(user); return fn(url, res); }, { auth: true });
-  exp('/api/export/daily', (url, res) => {
+  const MONEY_EXPORTS = new Set(['/api/export/payroll', '/api/export/debts', '/api/backup']);
+  const exp = (path, fn) => r.get(path, ({ url, res, user }) => {
+    if (MONEY_EXPORTS.has(path)) requireAdmin(user); else requireManager(user);
+    return fn(url, res, user);
+  }, { auth: true });
+  exp('/api/export/daily', (url, res, user) => {
     const date = needDate(url.searchParams.get('date'), localDate());
     const d = dailyReport(db, date);
+    const money = user.role === 'admin';
     csv(res, `wareef-daily-${date}`, [
-      attendanceSection(d.attendance), punchesSection(d.punches),
+      attendanceSection(d.attendance, undefined, money), punchesSection(d.punches),
       opsSection(d.ops ? [d.ops] : [], d.channels, d.metrics), stockSection(d.stock), requestsSection(d.requests),
-      ticketsSection(d.tickets), deductionsSection(d.deductions), debtsSection(d.debts),
+      ticketsSection(d.tickets), ...(money ? [deductionsSection(d.deductions), debtsSection(d.debts)] : []),
     ]);
   });
-  exp('/api/export/attendance', (url, res) => {
+  exp('/api/export/attendance', (url, res, user) => {
     const { from, to } = range(url, 31);
-    csv(res, `wareef-attendance-${from}_${to}`, [attendanceSection(loadAttendance(db, { from, to }))]);
+    csv(res, `wareef-attendance-${from}_${to}`, [attendanceSection(loadAttendance(db, { from, to }), undefined, user.role === 'admin')]);
   });
   exp('/api/export/payroll', (url, res) => {
     const month = needMonth(url.searchParams.get('month'));
@@ -623,9 +812,28 @@ export function createApp(db) {
 
   // Printable daily report (open in the browser, print or save as PDF).
   r.get('/report/daily', ({ url, res, user }) => {
-    requireAdmin(user);
+    requireManager(user);
     const date = needDate(url.searchParams.get('date'), localDate());
     send(res, 200, renderDailyReport(dailyReport(db, date)), { 'Content-Type': 'text/html; charset=utf-8', ...SECURITY_HEADERS });
+  }, { auth: true, page: true });
+
+  // Payslip: employees see their own once the month is closed; the manager sees anyone's, closed or not.
+  r.get('/payslip', ({ url, res, user }) => {
+    const month = needMonth(url.searchParams.get('month'));
+    const userId = user.role === 'admin' ? Number(url.searchParams.get('user_id')) : user.id;
+    const { rows, closed } = payrollFor(db, month);
+    if (!closed && user.role !== 'admin') throw new HttpError(404, 'مسيّر هذا الشهر لم يُعتمد بعد');
+    const row = rows.find((x) => x.userId === userId);
+    if (!row) throw new HttpError(404, 'لا توجد قسيمة');
+    const { from, to } = monthBounds(month);
+    send(res, 200, renderPayslip({ month, row, closed, deductions: deductionRows(db, from, to, userId), debts: debtRows(db, userId).filter((d) => d.date >= from && d.date <= to) }),
+      { 'Content-Type': 'text/html; charset=utf-8', ...SECURITY_HEADERS });
+  }, { auth: true, page: true });
+  r.get('/report/monthly', ({ url, res, user }) => {
+    requireManager(user);
+    const d = monthlyData(db, needMonth(url.searchParams.get('month')));
+    if (user.role !== 'admin') d.payroll = d.payroll.map(({ salary, suggested, deductions, repayments, net, debtBalance, ...r }) => r);
+    send(res, 200, renderMonthlyReport(d, user.role === 'admin'), { 'Content-Type': 'text/html; charset=utf-8', ...SECURITY_HEADERS });
   }, { auth: true, page: true });
 
   r.get('/health', () => ({ ok: true, time: localTime(Date.now()) }));
@@ -695,7 +903,8 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   if (boot) {
     console.log(`حساب المدير: ${boot.username}${boot.password ? ` / كلمة المرور المؤقتة: ${boot.password}` : ''}`);
   }
-  startNotifier(db);
+  startNotifier(db, [monthlyTick]);
+  waOnMessage((phone, text) => handleIncoming(db, phone, text));
   waAutoStart();
   const backup = () => dailyBackup(db).catch((e) => console.error('backup failed', e));
   backup();

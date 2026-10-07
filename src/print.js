@@ -1,6 +1,7 @@
 // Server-rendered daily report: open it, print it, or save as PDF from the browser.
 import { localTime } from './time.js';
 import { FLAG_LABELS } from './punch.js';
+import { monthName } from './messages.js';
 import { STATUS_LABELS, PUNCH_LABELS, DEDUCTION_LABELS, TICKET_KINDS, TICKET_STATUS, STOCK_KINDS, REQUEST_KINDS, REQUEST_STATUS } from './reports.js';
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -81,4 +82,83 @@ ${table(['الموظف', 'النوع', 'المبلغ', 'التفاصيل'], [
 <footer>وريف · فريق العمل · صدر التقرير ${esc(new Date().toISOString().slice(0, 16).replace('T', ' '))} UTC</footer>
 <script src="/print.js"></script>
 </body></html>`;
+}
+
+const sar = (v) => `${Number(v || 0).toLocaleString('en-US', { maximumFractionDigits: 2 })} ر.س`;
+const page = (title, body) => `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${esc(title)} | وريف</title><link rel="icon" href="/img/favicon.png"><link rel="stylesheet" href="/print.css"></head><body>${body}
+<footer>وريف · فريق العمل · صدر ${esc(new Date().toISOString().slice(0, 16).replace('T', ' '))} UTC</footer>
+<script src="/print.js"></script></body></html>`;
+
+export function renderPayslip({ month, row: r, closed, deductions, debts }) {
+  return page(`قسيمة راتب ${r.name} ${month}`, `
+<header class="head">
+  <img src="/img/logo-mark.png" alt="وريف" class="logo">
+  <div><h1>قسيمة راتب</h1><p>${esc(r.name)} · ${esc(monthName(month))} ${closed ? '' : '<span class="draft">مسودة: الشهر لم يُقفل</span>'}</p></div>
+  <button type="button" id="print" class="noprint">طباعة أو حفظ PDF</button>
+</header>
+<section class="kpis">
+  <div><b>${r.presentDays}/${r.workDays}</b><span>أيام الحضور</span></div>
+  <div><b>${r.absentDays}</b><span>أيام الغياب</span></div>
+  <div><b>${r.lateMinutes}</b><span>دقائق التأخير</span></div>
+  <div><b>${r.exitMinutes + r.earlyMinutes}</b><span>دقائق خروج وانصراف مبكر</span></div>
+</section>
+<h2>الراتب</h2>
+<div class="slip"><table><tbody>
+  <tr><td>الراتب الأساسي</td><td>${sar(r.salary)}</td></tr>
+  <tr><td>الخصومات المعتمدة</td><td>− ${sar(r.deductions)}</td></tr>
+  <tr><td>أقساط السلف</td><td>− ${sar(r.repayments)}</td></tr>
+  <tr class="total"><td>صافي الراتب</td><td>${sar(r.net)}</td></tr>
+</tbody></table></div>
+<p class="note">المتبقي من السلف بعد هذا الشهر: <b>${sar(r.debtBalance)}</b></p>
+<h2>تفاصيل الخصومات</h2>
+${table(['التاريخ', 'البند', 'المبلغ', 'التفاصيل'], deductions.map((x) => [x.date, DEDUCTION_LABELS[x.category] || '', n(x.amount), esc(x.reason)]), 'لا توجد خصومات')}
+<h2>السلف والسداد</h2>
+${table(['التاريخ', 'النوع', 'المبلغ', 'ملاحظة'], debts.map((x) => [x.date, x.kind === 'loan' ? 'سلفة' : 'سداد', n(x.amount), esc(x.note)]), 'لا توجد حركات')}
+<div class="sign"><div>توقيع الموظف</div><div>اعتماد المدير</div></div>`);
+}
+
+export function renderMonthlyReport(d, money = true) {
+  const sum = (k) => d.payroll.reduce((t, r) => t + (r[k] || 0), 0);
+  const bar = (v) => (v === null ? '—' : `<div style="display:flex;gap:8px;align-items:center"><div class="bar"><i style="width:${v}%"></i></div><b>${v}</b></div>`);
+  return page(`التقرير الشهري ${d.month}`, `
+<header class="head">
+  <img src="/img/logo-mark.png" alt="وريف" class="logo">
+  <div><h1>التقرير الشهري</h1><p>${esc(monthName(d.month))} · ${d.closed ? 'المسيّر مقفل' : 'الشهر مفتوح'}</p></div>
+  <button type="button" id="print" class="noprint">طباعة أو حفظ PDF</button>
+</header>
+<section class="kpis">
+  <div><b>${n(d.totalOrders)}</b><span>إجمالي الطلبات</span></div>
+  <div><b>${n(d.totalAmount)}</b><span>إجمالي المبالغ (ر.س)</span></div>
+  <div><b>${n(sum('lateMinutes'))}</b><span>دقائق التأخير</span></div>
+  <div><b>${n(sum('absentDays'))}</b><span>أيام الغياب</span></div>
+  ${money ? `<div><b>${n(sum('deductions'))}</b><span>الخصومات (ر.س)</span></div><div><b>${n(Math.round(sum('net')))}</b><span>صافي الرواتب (ر.س)</span></div>` : ''}
+</section>
+${d.award ? `<p>🏆 موظف الشهر: <b>${esc(d.award.name)}</b> (${d.award.score} من 100)</p>` : ''}
+<h2>الطلبات حسب القناة</h2>
+${table(['القناة', 'عدد الطلبات', 'المبلغ (ر.س)'], [...d.channels.map((c) => [esc(c.name), n(c.count), n(c.amount)]), ['<b>الإجمالي</b>', `<b>${n(d.totalOrders)}</b>`, `<b>${n(d.totalAmount)}</b>`]])}
+<h2>العمليات</h2>
+${table(['البند', 'الإجمالي', 'أيام التسجيل'], d.metrics.map((m) => [esc(m.name), `<b>${n(m.total)}</b>`, m.days]))}
+<h2>البضائع ومرتجعات التجار</h2>
+${table(['البند', 'العدد', 'الكمية', 'الحالة'], [
+    ['فواتير بضاعة جديدة', n(d.stock.invoices.n), n(d.stock.invoices.q), '—'],
+    ['أصناف مرتجعة للتجار', n(d.stock.returns.n), n(d.stock.returns.q), `جاهز ${n(d.stock.returns.ready)} · أُرسل ${n(d.stock.returns.sent)} · تمت التسوية ${n(d.stock.returns.settled)}`],
+  ])}
+<h2>تقييم الأداء</h2>
+${table(['#', 'الموظف', 'التقييم', 'الالتزام', 'التسجيل اليومي', 'الحضور', 'التأخير (د)', 'إنجازات', 'مقارنة بالشهر السابق'],
+    d.performance.map((r) => [r.rank ?? '—', esc(r.name), bar(r.score), r.commitment ?? '—', r.recording ?? '—', `${r.presentDays}/${r.expectedDays}`, r.lateMinutes, r.achievements,
+      r.change === null ? '—' : r.change > 0 ? `▲ ${r.change}` : r.change < 0 ? `▼ ${-r.change}` : '='])) }
+<h2>الحضور${money ? ' والرواتب' : ''}</h2>
+${table(['الموظف', 'الحضور', 'الغياب', 'أيام التأخير', 'دقائق التأخير', 'خروج (د)', ...(money ? ['الراتب', 'الخصومات', 'أقساط السلف', 'الصافي'] : [])],
+    d.payroll.map((r) => [esc(r.name), `${r.presentDays}/${r.workDays}`, r.absentDays, r.lateDays, r.lateMinutes, r.exitMinutes + r.earlyMinutes,
+      ...(money ? [n(r.salary), n(r.deductions), n(r.repayments), `<b>${n(r.net)}</b>`] : [])]))}
+<h2>الطلبات والتذاكر والإجازات</h2>
+${table(['البند', 'العدد'], [
+    ['طلبات فسح ونواقص', n(Object.values(d.requests).reduce((a, b) => a + b, 0))],
+    ['منها بانتظار المدير', n(d.requests.pending)],
+    ['تذاكر الإنجازات', n(d.tickets.achievement)],
+    ['ملاحظات ومشاكل وطلبات', n((d.tickets.note || 0) + (d.tickets.issue || 0) + (d.tickets.request || 0))],
+    ['إجازات معتمدة', n((d.leaves.leave || 0) + (d.leaves.sick || 0))],
+    ['استئذانات معتمدة', n(d.leaves.permission)],
+  ])}`);
 }

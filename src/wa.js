@@ -12,6 +12,21 @@ let sock = null;
 let starting = false;
 let retries = 0;
 let stopped = false;
+let onIncoming = null;
+const sentIds = new Set();
+const remember = (m) => { if (m?.key?.id) { sentIds.add(m.key.id); if (sentIds.size > 500) sentIds.delete(sentIds.values().next().value); } };
+
+/** `handler(phone, text)` gets every incoming text and may return a reply. */
+export function waOnMessage(handler) { onIncoming = handler; }
+
+/** The phone number behind a message key. Baileys 7 may address chats by LID; the phone then sits in the *Alt / senderPn fields. */
+export function phoneOfKey(key = {}) {
+  for (const j of [key.remoteJidAlt, key.senderPn, key.participantAlt, key.remoteJid]) {
+    if (typeof j === 'string' && j.endsWith('@s.whatsapp.net')) return j.split('@')[0].split(':')[0];
+  }
+  return '';
+}
+export const textOf = (m) => m?.message?.conversation || m?.message?.extendedTextMessage?.text || '';
 
 const authDir = () => process.env.WHATSAPP_AUTH_DIR || join(dirname(config.dbPath), 'wa-auth');
 
@@ -42,6 +57,29 @@ export async function waStart() {
     });
     sock = s;
     s.ev.on('creds.update', saveCreds);
+    s.ev.on('messages.upsert', async ({ messages, type }) => {
+      if (!onIncoming || (type !== 'notify' && type !== 'append')) return;
+      for (const m of messages) {
+        try {
+          if (sentIds.has(m.key?.id)) continue;
+          // Only fresh messages: never act on history that syncs after a reconnect.
+          if (Date.now() / 1000 - Number(m.messageTimestamp || 0) > 300) continue;
+          if (type === 'append' && !m.key?.fromMe) continue;
+          const text = textOf(m).trim();
+          if (!text) continue;
+          const phone = phoneOfKey(m.key);
+          // Writing to yourself ("message yourself" chat) when the manager linked their own number.
+          if (m.key?.fromMe) {
+            if (!wa.me || phone !== wa.me) continue;
+          }
+          if (!phone) continue;
+          const reply = await onIncoming(phone, text);
+          if (reply) remember(await s.sendMessage(m.key.remoteJid, { text: reply }));
+        } catch (e) {
+          console.error('whatsapp incoming', e.message);
+        }
+      }
+    });
     s.ev.on('connection.update', (u) => {
       if (u.qr) { wa.qr = u.qr; wa.status = 'qr'; }
       if (u.connection === 'open') {
@@ -82,7 +120,14 @@ export async function waSend(to, text) {
   if (!waConnected()) throw Object.assign(new Error('واتساب غير مربوط حالياً'), { defer: true });
   const [hit] = await sock.onWhatsApp(`${to}@s.whatsapp.net`);
   if (!hit?.exists) throw new Error(`الرقم ${to} غير مسجّل في واتساب`);
-  await sock.sendMessage(hit.jid, { text });
+  remember(await sock.sendMessage(hit.jid, { text }));
+}
+
+export async function waSendDocument(to, buffer, fileName, caption = '') {
+  if (!waConnected()) throw Object.assign(new Error('واتساب غير مربوط حالياً'), { defer: true });
+  const [hit] = await sock.onWhatsApp(`${to}@s.whatsapp.net`);
+  if (!hit?.exists) throw new Error(`الرقم ${to} غير مسجّل في واتساب`);
+  remember(await sock.sendMessage(hit.jid, { document: buffer, fileName, mimetype: 'application/vnd.sqlite3', caption }));
 }
 
 export async function waLogout() {

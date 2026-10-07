@@ -18,7 +18,10 @@ import { localDate, localTime, at } from './time.js';
 import { getSettings } from './settings.js';
 import { loadAttendance } from './attendance.js';
 import { opsRows } from './reports.js';
-import { waConnected, waSend, waStatus } from './wa.js';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { waConnected, waSend, waSendDocument, waStatus } from './wa.js';
 import * as msg from './messages.js';
 
 const env = process.env;
@@ -59,8 +62,25 @@ export function normalizePhone(raw) {
   return /^\d{10,15}$/.test(d) ? d : '';
 }
 
-async function deliver(to, body) {
+/** A consistent copy of the whole database, made while the app keeps running. */
+export async function snapshotDb(db) {
+  const dir = await mkdtemp(join(tmpdir(), 'wareef-'));
+  const file = join(dir, 'snapshot.db');
+  try {
+    db.exec(`VACUUM INTO '${file.replace(/'/g, "''")}'`);
+    return await readFile(file);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+async function deliver(to, body, n = null, db = null) {
   const { provider, configured } = providerStatus();
+  if (n?.kind === 'backup') {
+    if (provider !== 'qr') throw Object.assign(new Error('النسخة الاحتياطية عبر واتساب تحتاج الربط بالباركود'), { skip: true });
+    const date = localDate();
+    return waSendDocument(to, await snapshotDb(db), `wareef-backup-${date}.db`, body);
+  }
   if (provider === 'qr') return waSend(to, body);
   if (!configured) throw Object.assign(new Error('مزوّد واتساب غير مضبوط'), { skip: true });
   const ctrl = AbortSignal.timeout(15_000);
@@ -110,6 +130,24 @@ export function notifyManager(db, kind, body, key = null) {
   return queue(db, { to: managerPhone(db), body, kind, key });
 }
 
+/** To the manager about routine activity (every punch, entry, reply...). Has its own switch. */
+export function notifyActivity(db, kind, body, key = null) {
+  const n = getSettings(db).notify;
+  if (!n.alert_manager || !n.alert_all) return false;
+  return queue(db, { to: n.manager_phone, body, kind, key });
+}
+
+/** To every active employee holding a permission. `bodyFor(userId)` may return null to skip someone. */
+export function notifyUsersWithPerm(db, perm, kind, bodyFor, key) {
+  const users = db.prepare("SELECT id FROM users WHERE role = 'employee' AND active = 1 AND EXISTS (SELECT 1 FROM json_each(users.perms) WHERE value = ?)").all(perm);
+  let n = 0;
+  for (const u of users) {
+    const body = bodyFor(u.id);
+    if (body && notifyEmployee(db, u.id, kind, body, `${key}:${u.id}`)) n++;
+  }
+  return n;
+}
+
 /** Send whatever is pending. Called every few seconds; one message at a time to stay gentle with the provider. */
 let sending = false;
 export async function flush(db, send = deliver) {
@@ -123,7 +161,7 @@ export async function flush(db, send = deliver) {
     const rows = db.prepare("SELECT * FROM notifications WHERE status = 'pending' AND attempts < 3 ORDER BY id LIMIT 20").all();
     for (const n of rows) {
       try {
-        await send(n.to_phone, n.body);
+        await send(n.to_phone, n.body, n, db);
         db.prepare("UPDATE notifications SET status = 'sent', sent_at = ?, attempts = attempts + 1, error = NULL WHERE id = ?").run(Date.now(), n.id);
         sent++;
       } catch (e) {
@@ -243,8 +281,19 @@ export function dailySummary(db, date, rows, s = getSettings(db)) {
   return out.join('\n');
 }
 
-export function startNotifier(db) {
+/** Every night at the set time: the database as a file in the manager's WhatsApp. */
+export function backupTick(db, now = Date.now()) {
+  const n = getSettings(db).notify;
+  if (!n.daily_backup || !n.manager_phone || providerStatus().provider !== 'qr') return false;
+  if (localTime(now) < n.backup_time) return false;
+  const date = localDate(now);
+  return queue(db, { to: n.manager_phone, kind: 'backup', key: `backup:${date}`, body: msg.backupCaption({ date }) });
+}
+
+export function startNotifier(db, jobs = []) {
   const safe = (fn) => () => { try { const r = fn(); if (r?.catch) r.catch((e) => console.error('notify', e)); } catch (e) { console.error('notify', e); } };
   setInterval(safe(() => tick(db)), 60_000).unref();
+  setInterval(safe(() => backupTick(db)), 60_000).unref();
+  for (const job of jobs) setInterval(safe(() => job(db)), 60_000).unref();
   setInterval(safe(() => flush(db)), 15_000).unref();
 }

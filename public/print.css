@@ -18,3 +18,11 @@ th { background: var(--sunk); font-weight: 700; }
 .st { font-weight: 700; } .st-present { color: var(--good); } .st-late, .st-not_arrived { color: var(--warn); } .st-absent, .st-partial { color: var(--bad); }
 footer { margin-top: 28px; color: var(--muted); font-size: .8rem; border-top: 1px solid var(--line); padding-top: 10px; }
 @media print { .noprint { display: none; } body { padding: 0; } h2 { break-after: avoid; } tr { break-inside: avoid; } }
+.slip { border: 1px solid var(--line); border-radius: 10px; padding: 4px 16px; margin: 6px 0; }
+.slip table td, .slip table th { border: 0; border-bottom: 1px solid var(--line); }
+.slip .total td { font-size: 1.15rem; font-weight: 700; border-bottom: 0; }
+.draft { display: inline-block; background: #fff4e0; color: var(--warn); border-radius: 6px; padding: 2px 10px; font-weight: 700; font-size: .85rem; }
+.bar { height: 8px; background: var(--sunk); border-radius: 4px; overflow: hidden; min-width: 80px; }
+.bar i { display: block; height: 100%; background: var(--ink); }
+.sign { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; margin-top: 40px; color: var(--muted); }
+.sign div { border-top: 1px solid var(--line); padding-top: 6px; }
