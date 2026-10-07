@@ -22,6 +22,17 @@ export const DEFAULTS = {
     require_geo: false,
     max_clock_skew_minutes: 5,
   },
+  // Daily numbers employees report. `note: true` adds a notes field next to the number.
+  // Who may fill each one is a permission on the employee: "m:<key>".
+  metrics: [
+    { key: 'orders_prepared', name: 'الطلبات المجهّزة', note: false },
+    { key: 'shipments', name: 'الشحنات المرسلة', note: false },
+    { key: 'returns_warehouse', name: 'مرتجعات دخلت المستودع', note: false },
+    { key: 'returns_system', name: 'مرتجعات سُجّلت في النظام', note: false },
+    { key: 'daily_edits', name: 'التعديلات اليومية', note: false },
+    { key: 'pending_issues', name: 'الإشكاليات المعلّقة', note: true },
+    { key: 'pending_chats', name: 'دردشات معلّقة بدون رد', note: false },
+  ],
   channels: [
     { key: 'salla', name: 'سلة' },
     { key: 'tabby', name: 'تابي' },
@@ -86,6 +97,14 @@ export function saveSettings(db, patch) {
     })).filter((c) => /^[a-z0-9_]+$/.test(c.key) && c.name && !seen.has(c.key) && seen.add(c.key));
     if (!next.channels.length) throw new HttpError(400, 'أضف قناة طلبات واحدة على الأقل');
   }
+  if ('metrics' in patch) {
+    const seen = new Set();
+    next.metrics = (patch.metrics || []).map((m) => ({
+      key: String(m.key || '').trim().toLowerCase().slice(0, 30),
+      name: String(m.name || '').trim().slice(0, 50),
+      note: !!m.note,
+    })).filter((m) => /^[a-z0-9_]+$/.test(m.key) && m.name && !seen.has(m.key) && seen.add(m.key));
+  }
   const up = db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value');
   for (const k of Object.keys(DEFAULTS)) up.run(k, JSON.stringify(next[k]));
   return next;
@@ -102,4 +121,14 @@ export function allPeriods(schedule) {
   const map = new Map();
   for (let d = 0; d < 7; d++) for (const p of schedule.days[d] || []) if (!map.has(p.id)) map.set(p.id, p.name);
   return [...map].map(([id, name]) => ({ id, name }));
+}
+
+/** Every permission an employee can hold, for the staff screen. */
+export function permissionList(settings) {
+  return [
+    { key: 'orders', name: 'تسجيل طلبات القنوات (سلة، تابي، تمارا...)' },
+    { key: 'stock', name: 'فواتير البضائع الجديدة ومرتجعات التجار' },
+    { key: 'requests', name: 'رفع طلبات الفسح والنواقص' },
+    ...settings.metrics.map((m) => ({ key: `m:${m.key}`, name: `رقم يومي: ${m.name}` })),
+  ];
 }

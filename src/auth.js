@@ -70,27 +70,39 @@ export function logout(db, req) {
 export function currentUser(db, req) {
   const token = parseCookies(req.headers.cookie)[SESSION_COOKIE];
   if (!token) return null;
-  const row = db.prepare(`SELECT u.id, u.username, u.name, u.role, u.can_log_ops, u.salary, u.periods, u.day_off, u.created_at
+  const row = db.prepare(`SELECT u.id, u.username, u.name, u.role, u.perms, u.salary, u.periods, u.day_off, u.created_at
                           FROM sessions s JOIN users u ON u.id = s.user_id
                           WHERE s.token_hash = ? AND s.expires_at > ? AND u.active = 1`).get(tokenHash(token), Date.now());
-  return row ? { ...row } : null;
+  return row ? { ...row, perms: JSON.parse(row.perms || '[]') } : null;
+}
+
+/** Managers can do everything; employees only what their permissions list. */
+export function can(user, perm) {
+  return user.role === 'admin' || user.perms.includes(perm);
+}
+
+export function requirePerm(user, perm) {
+  if (!can(user, perm)) throw new HttpError(403, 'ليست لديك صلاحية لهذا الإجراء');
 }
 
 export function requireAdmin(user) {
   if (user.role !== 'admin') throw new HttpError(403, 'هذه الصفحة للمدير فقط');
 }
 
+/** Anyone who records any part of the daily operations. */
 export function requireOps(user) {
-  if (user.role !== 'admin' && !user.can_log_ops) throw new HttpError(403, 'ليست لديك صلاحية تسجيل العمليات اليومية');
+  if (user.role !== 'admin' && !user.perms.some((p) => p === 'orders' || p === 'stock' || p.startsWith('m:'))) {
+    throw new HttpError(403, 'ليست لديك صلاحية تسجيل العمليات اليومية');
+  }
 }
 
 const STAFF = [
-  ['abdullah', 'عبدالله'],
-  ['basem', 'باسم'],
-  ['monther', 'منذر'],
-  ['safwan', 'صفوان'],
-  ['ali', 'علي'],
-  ['abdulmalik', 'عبدالملك'],
+  ['abdullah', 'عبدالله', ['m:shipments', 'm:returns_warehouse', 'm:orders_prepared']],
+  ['basem', 'باسم', ['requests']],
+  ['monther', 'منذر', ['m:pending_issues', 'm:pending_chats']],
+  ['safwan', 'صفوان', ['m:daily_edits']],
+  ['ali', 'علي', []],
+  ['abdulmalik', 'عبدالملك', ['orders', 'stock', 'm:returns_system']],
 ];
 
 /** First boot: the manager account plus the six employees (no passwords until the manager sets them). */
@@ -100,7 +112,7 @@ export function bootstrap(db) {
   const password = config.adminPassword || randomBytes(6).toString('base64url');
   db.prepare("INSERT INTO users (username, name, role, password_hash, created_at) VALUES (?, ?, 'admin', ?, ?)")
     .run(config.adminUsername, config.adminName, hashPassword(password), now);
-  const ins = db.prepare("INSERT INTO users (username, name, role, created_at) VALUES (?, ?, 'employee', ?)");
-  for (const [u, n] of STAFF) ins.run(u, n, now);
+  const ins = db.prepare("INSERT INTO users (username, name, role, perms, created_at) VALUES (?, ?, 'employee', ?, ?)");
+  for (const [u, n, perms] of STAFF) ins.run(u, n, JSON.stringify(perms), now);
   return { username: config.adminUsername, password: config.adminPassword ? null : password };
 }

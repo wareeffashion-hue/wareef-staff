@@ -6,7 +6,7 @@ process.env.ADMIN_PASSWORD = 'manager123';
 const { openDb } = await import('../src/db.js');
 const { bootstrap } = await import('../src/auth.js');
 const { createApp } = await import('../src/server.js');
-const { localDate } = await import('../src/time.js');
+const { localDate, addDays } = await import('../src/time.js');
 
 let server;
 let base;
@@ -60,7 +60,7 @@ test('employees cannot log in until the manager sets a password', async () => {
   assert.equal((await ali('POST', '/api/login', { username: 'ali', password: 'anything' })).status, 401);
   const { body } = await admin('GET', '/api/users');
   const id = (u) => body.users.find((x) => x.username === u).id;
-  assert.equal((await admin('PUT', `/api/users/${id('ali')}`, { password: 'ali12345', salary: 3000, can_log_ops: true })).status, 200);
+  assert.equal((await admin('PUT', `/api/users/${id('ali')}`, { password: 'ali12345', salary: 3000, perms: ['orders', 'stock', 'm:shipments', 'not-a-perm'] })).status, 200);
   assert.equal((await admin('PUT', `/api/users/${id('basem')}`, { password: 'basem123', salary: 4500 })).status, 200);
   assert.equal((await ali('POST', '/api/login', { username: 'ali', password: 'ali12345' })).status, 200);
   assert.equal((await basem('POST', '/api/login', { username: 'basem', password: 'basem123' })).status, 200);
@@ -103,12 +103,51 @@ test('one phone punching for two people is flagged', async () => {
   assert.ok(body.punches[0].flags.includes('shared_device'));
 });
 
-test('operations, stock moves and tickets', async () => {
+test('operations: each part needs its own permission', async () => {
   const date = localDate();
-  assert.equal((await ali('PUT', `/api/ops/${date}`, { channels: { salla: { count: 12, amount: 3400 }, tabby: { count: 3, amount: 900 } }, shipments: 14, returns: 1, notes: 'تأخر مندوب الشحن' })).status, 200);
-  assert.equal((await basem('PUT', `/api/ops/${date}`, { shipments: 1 })).status, 403);
-  assert.equal((await ali('POST', '/api/stock', { kind: 'new_goods', party: 'مصنع الرياض', description: 'عبايات سوداء', quantity: 40, value: 6000 })).status, 200);
-  assert.equal((await ali('POST', '/api/stock', { kind: 'merchant_return', party: 'تاجر جدة', description: 'مقاسات خاطئة', quantity: 5 })).status, 200);
+  assert.equal((await ali('PUT', `/api/ops/${date}`, { channels: { salla: { count: 12, amount: 3400 }, tabby: { count: 3, amount: 900 } }, notes: 'تأخر مندوب الشحن' })).status, 200);
+  assert.equal((await ali('PUT', `/api/ops/${date}`, { metrics: { shipments: { value: 14 } } })).status, 200);
+  assert.equal((await ali('PUT', `/api/ops/${date}`, { metrics: { pending_chats: { value: 3 } } })).status, 403);
+  assert.equal((await basem('PUT', `/api/ops/${date}`, { metrics: { shipments: { value: 1 } } })).status, 403);
+  assert.equal((await ali('PUT', `/api/ops/${addDays(date, -10)}`, { metrics: { shipments: { value: 1 } } })).status, 403);
+  // a second save of one part keeps the other parts
+  assert.equal((await ali('PUT', `/api/ops/${date}`, { channels: { tamara: { count: 2, amount: 500 } } })).status, 200);
+  const ops = (await admin('GET', '/api/ops')).body.ops.find((o) => o.date === date);
+  assert.equal(ops.totalOrders, 17);
+  assert.equal(ops.metrics.shipments.value, 14);
+  assert.equal(ops.notes, 'تأخر مندوب الشحن');
+  const users = (await admin('GET', '/api/users')).body.users;
+  assert.deepEqual(users.find((u) => u.username === 'ali').perms, ['orders', 'stock', 'm:shipments']);
+  assert.deepEqual(users.find((u) => u.username === 'monther').perms, ['m:pending_issues', 'm:pending_chats']);
+});
+
+test('invoices and merchant returns are recorded per product code', async () => {
+  const r = await ali('POST', '/api/stock', { kind: 'new_goods', party: 'مصنع الرياض', invoice_no: 'INV-88', lines: [{ sku: 'AB-100', quantity: 40, value: 6000 }, { sku: 'AB-101', quantity: 10 }] });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.ids.length, 2);
+  assert.equal((await ali('POST', '/api/stock', { kind: 'merchant_return', party: 'تاجر جدة', lines: [{ sku: 'AB-100', quantity: 0 }] })).status, 400);
+  assert.equal((await ali('POST', '/api/stock', { kind: 'merchant_return', party: 'تاجر جدة', lines: [{ sku: 'AB-100', quantity: 5 }] })).status, 200);
+  assert.equal((await basem('POST', '/api/stock', { kind: 'new_goods', party: 'x', lines: [{ sku: 'A', quantity: 1 }] })).status, 403);
+  const stock = (await admin('GET', '/api/ops')).body.stock;
+  assert.ok(stock.some((s) => s.invoice_no === 'INV-88' && s.sku === 'AB-101' && s.quantity === 10));
+});
+
+test('release and shortage requests', async () => {
+  const users = (await admin('GET', '/api/users')).body.users;
+  const basemId = users.find((u) => u.username === 'basem').id;
+  assert.equal((await admin('PUT', `/api/users/${basemId}`, { perms: ['requests'] })).status, 200);
+  const r = await basem('POST', '/api/requests', { kind: 'release', sku: 'AB-100', quantity: 3, reason: 'عيب في الخياطة' });
+  assert.equal(r.status, 200);
+  assert.equal((await basem('POST', '/api/requests', { kind: 'shortage', sku: 'AB-200', quantity: 5 })).status, 400);
+  assert.equal((await ali('POST', '/api/requests', { kind: 'shortage', sku: 'AB-200', quantity: 5, reason: 'نفد' })).status, 403);
+  assert.equal((await basem('PUT', `/api/requests/${r.body.id}`, { status: 'approved' })).status, 403);
+  assert.equal((await admin('PUT', `/api/requests/${r.body.id}`, { status: 'approved', response: 'تمت الموافقة، رجّعها الخميس' })).status, 200);
+  const mine = (await basem('GET', '/api/requests')).body.requests;
+  assert.equal(mine[0].status, 'approved');
+  assert.equal((await admin('GET', '/api/dashboard')).body.pendingRequests, 0);
+});
+
+test('tickets', async () => {
   const t = await basem('POST', '/api/tickets', { kind: 'achievement', title: 'إنجازات اليوم', body: 'جهزت 20 طلب' });
   assert.equal(t.status, 200);
   assert.equal((await ali('GET', `/api/tickets/${t.body.id}`)).status, 404);
@@ -140,7 +179,8 @@ test('dashboard, manual punch with audit, flags', async () => {
   const d = await admin('GET', '/api/dashboard');
   assert.equal(d.status, 200);
   assert.equal(d.body.attendance.length, 6);
-  assert.equal(d.body.ops.totalOrders, 15);
+  assert.equal(d.body.ops.totalOrders, 17);
+  assert.equal(d.body.ops.metrics.shipments.value, 14);
   const users = (await admin('GET', '/api/users')).body.users;
   const monther = users.find((u) => u.username === 'monther').id;
   assert.equal((await admin('POST', '/api/punches', { user_id: monther, date: localDate(), time: '00:00', type: 'in' })).status, 400);
@@ -157,6 +197,8 @@ test('exports and printable report', async () => {
   assert.match(csv.headers.get('content-type'), /text\/csv/);
   assert.ok(csv.body.includes('الحضور والانصراف'));
   assert.ok(csv.body.includes('مصنع الرياض'));
+  assert.ok(csv.body.includes('INV-88'));
+  assert.ok(csv.body.includes('عيب في الخياطة'));
   assert.ok(csv.body.includes('إنجازات اليوم'));
   for (const p of ['/api/export/attendance', '/api/export/payroll', '/api/export/ops', '/api/export/tickets', '/api/export/debts']) {
     assert.equal((await admin('GET', p)).status, 200, p);

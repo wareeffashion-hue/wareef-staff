@@ -7,16 +7,16 @@ import { config, DAY } from './config.js';
 import { openDb, audit, tx } from './db.js';
 import { HttpError, Router, clientIp, parseJson, rateLimiter, readBody, send } from './http.js';
 import {
-  bootstrap, currentUser, deviceId, hashPassword, login, logout, requireAdmin, requireOps,
+  bootstrap, can, currentUser, deviceId, hashPassword, login, logout, requireAdmin, requireOps, requirePerm,
   sessionCookie, validatePassword, validUsername, verifyPassword,
 } from './auth.js';
-import { getSettings, saveSettings, allPeriods } from './settings.js';
+import { getSettings, saveSettings, allPeriods, permissionList } from './settings.js';
 import { localDate, isDate, addDays, monthBounds, localTime } from './time.js';
 import { computeDay, loadAttendance, periodsFor, summarize } from './attendance.js';
 import { FLAG_LABELS, NEXT, lastPunch, managerPunch, recordPunch, voidPunch } from './punch.js';
 import {
   attendanceSection, dailyReport, debtBalances, debtRows, debtsSection, deductionRows, deductionsSection,
-  opsRows, opsSection, payroll, payrollSection, punchesSection, stockRows, stockSection, ticketRows, ticketsSection, toCsv,
+  opsRows, opsSection, payroll, payrollSection, punchesSection, requestRows, requestsSection, stockRows, stockSection, ticketRows, ticketsSection, toCsv,
 } from './reports.js';
 import { renderDailyReport } from './print.js';
 
@@ -62,7 +62,7 @@ const csv = (res, name, sections) => send(res, 200, toCsv(sections), {
 function userView(u) {
   return {
     id: u.id, username: u.username, name: u.name, role: u.role, active: !!u.active, salary: u.salary,
-    periods: u.periods ? JSON.parse(u.periods) : null, day_off: u.day_off, can_log_ops: !!u.can_log_ops,
+    periods: u.periods ? JSON.parse(u.periods) : null, day_off: u.day_off, perms: JSON.parse(u.perms || '[]'),
     has_password: !!u.password_hash, created_at: u.created_at,
   };
 }
@@ -100,9 +100,9 @@ export function createApp(db) {
   r.get('/api/me', ({ user }) => {
     const s = getSettings(db);
     return {
-      user: { id: user.id, name: user.name, username: user.username, role: user.role, can_log_ops: !!user.can_log_ops },
+      user: { id: user.id, name: user.name, username: user.username, role: user.role, perms: user.perms },
       today: localDate(), now: Date.now(), tzOffset: config.tzOffsetMinutes,
-      channels: s.channels, periods: allPeriods(s.schedule),
+      channels: s.channels, metrics: s.metrics, periods: allPeriods(s.schedule),
     };
   }, { auth: true });
   r.post('/api/me/password', async ({ req, user }) => {
@@ -181,41 +181,115 @@ export function createApp(db) {
   }, { auth: true });
 
   // ------------------------------------------------------------ daily operations
+  // Each part is gated by its own permission: channel orders ("orders"), invoices and merchant
+  // returns ("stock"), and every daily number ("m:<key>").
   r.get('/api/ops', ({ url, user }) => {
     requireOps(user);
     const { from, to } = range(url, 31);
-    return { ops: opsRows(db, from, to), stock: stockRows(db, from, to), channels: getSettings(db).channels };
+    const s = getSettings(db);
+    return { ops: opsRows(db, from, to), stock: stockRows(db, from, to), channels: s.channels, metrics: s.metrics };
   }, { auth: true });
   r.put('/api/ops/:date', async ({ req, params, user }) => {
     requireOps(user);
     const date = needDate(params.date);
     if (date > localDate()) throw new HttpError(400, 'لا يمكن التسجيل لتاريخ لم يأتِ بعد');
+    if (user.role !== 'admin' && date < addDays(localDate(), -3)) throw new HttpError(403, 'التعديل متاح لآخر 3 أيام فقط. تواصل مع المدير');
     const b = parseJson(await readBody(req));
-    const { channels } = getSettings(db);
-    const ch = {};
-    for (const c of channels) {
-      const v = b.channels?.[c.key] || {};
-      ch[c.key] = { count: Math.round(num(v.count || 0, 0, 100000)), amount: num(v.amount || 0, 0, 1e8) };
-    }
-    const prev = db.prepare('SELECT * FROM daily_ops WHERE date = ?').get(date);
-    db.prepare(`INSERT INTO daily_ops (date, channels, shipments, returns, notes, updated_by, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(date) DO UPDATE SET channels = excluded.channels, shipments = excluded.shipments, returns = excluded.returns,
-                notes = excluded.notes, updated_by = excluded.updated_by, updated_at = excluded.updated_at`)
-      .run(date, JSON.stringify(ch), Math.round(num(b.shipments || 0, 0, 100000)), Math.round(num(b.returns || 0, 0, 100000)), text(b.notes, 2000), user.id, Date.now());
-    if (prev) audit(db, user.id, 'ops.update', null, { date });
+    const { channels, metrics } = getSettings(db);
+    const now = Date.now();
+    tx(db, () => {
+      if (b.channels !== undefined || b.notes !== undefined) {
+        requirePerm(user, 'orders');
+        const prev = db.prepare('SELECT * FROM daily_ops WHERE date = ?').get(date);
+        const ch = prev ? JSON.parse(prev.channels) : {};
+        if (b.channels) {
+          for (const c of channels) {
+            const v = b.channels[c.key];
+            if (v) ch[c.key] = { count: Math.round(num(v.count || 0, 0, 100000)), amount: num(v.amount || 0, 0, 1e8) };
+          }
+        }
+        const notes = b.notes !== undefined ? text(b.notes, 2000) : (prev?.notes || '');
+        db.prepare(`INSERT INTO daily_ops (date, channels, notes, updated_by, updated_at) VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(date) DO UPDATE SET channels = excluded.channels, notes = excluded.notes,
+                    updated_by = excluded.updated_by, updated_at = excluded.updated_at`)
+          .run(date, JSON.stringify(ch), notes, user.id, now);
+        if (prev) audit(db, user.id, 'ops.update', null, { date });
+      }
+      for (const [key, v] of Object.entries(b.metrics || {})) {
+        const m = metrics.find((x) => x.key === key);
+        if (!m) throw new HttpError(400, 'رقم يومي غير معروف');
+        requirePerm(user, `m:${key}`);
+        const prev = db.prepare('SELECT value FROM daily_metrics WHERE date = ? AND key = ?').get(date, key);
+        db.prepare(`INSERT INTO daily_metrics (date, key, value, note, updated_by, updated_at) VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(date, key) DO UPDATE SET value = excluded.value, note = excluded.note,
+                    updated_by = excluded.updated_by, updated_at = excluded.updated_at`)
+          .run(date, key, num(v?.value || 0, 0, 1e6), m.note ? text(v?.note, 1000) : '', user.id, now);
+        if (prev) audit(db, user.id, 'metric.update', null, { date, key, from: prev.value, to: num(v?.value || 0, 0, 1e6) });
+      }
+    });
     return { ok: true };
   }, { auth: true });
   r.post('/api/stock', async ({ req, user }) => {
-    requireOps(user);
+    requirePerm(user, 'stock');
     const b = parseJson(await readBody(req));
     const kind = ['merchant_return', 'new_goods'].includes(b.kind) ? b.kind : null;
     if (!kind) throw new HttpError(400, 'اختر النوع');
     const date = needDate(b.date, localDate());
-    const description = text(b.description, 500);
-    if (!description && !text(b.party)) throw new HttpError(400, 'اكتب اسم التاجر أو وصف البضاعة');
-    const res = db.prepare('INSERT INTO stock_moves (date, kind, party, description, quantity, value, note, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(date, kind, text(b.party, 120), description, num(b.quantity || 0, 0, 1e7), num(b.value || 0, 0, 1e9), text(b.note, 500), user.id, Date.now());
+    const lines = Array.isArray(b.lines) && b.lines.length ? b.lines : [b];
+    const party = text(b.party, 120);
+    const invoice = text(b.invoice_no, 60);
+    if (!party) throw new HttpError(400, 'اكتب اسم التاجر');
+    const ins = db.prepare(`INSERT INTO stock_moves (date, kind, party, invoice_no, sku, description, quantity, value, note, created_by, created_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    const ids = tx(db, () => lines.slice(0, 100).map((l) => {
+      const sku = text(l.sku, 60);
+      const qty = num(l.quantity || 0, 0, 1e7);
+      if (!sku && !text(l.description)) throw new HttpError(400, 'اكتب كود المنتج لكل صنف');
+      if (!qty) throw new HttpError(400, `اكتب العدد للصنف ${sku}`);
+      return Number(ins.run(date, kind, party, invoice, sku, text(l.description, 300), qty, num(l.value || 0, 0, 1e9), text(b.note, 500), user.id, Date.now()).lastInsertRowid);
+    }));
+    return { ids };
+  }, { auth: true });
+
+  // ------------------------------------------------------------ release / shortage requests
+  r.get('/api/requests', ({ url, user }) => {
+    const isAdmin = user.role === 'admin';
+    if (!isAdmin) requirePerm(user, 'requests');
+    const status = ['pending', 'approved', 'rejected', 'done'].includes(url.searchParams.get('status')) ? url.searchParams.get('status') : null;
+    const where = [];
+    const args = [];
+    if (!isAdmin) { where.push('q.user_id = ?'); args.push(user.id); }
+    if (status) { where.push('q.status = ?'); args.push(status); }
+    return {
+      requests: db.prepare(`SELECT q.*, u.name AS user_name, h.name AS handled_by_name FROM requests q JOIN users u ON u.id = q.user_id
+                            LEFT JOIN users h ON h.id = q.handled_by ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+                            ORDER BY (q.status = 'pending') DESC, q.created_at DESC LIMIT 300`).all(...args),
+    };
+  }, { auth: true });
+  r.post('/api/requests', async ({ req, user }) => {
+    requirePerm(user, 'requests');
+    const b = parseJson(await readBody(req));
+    const kind = ['release', 'shortage'].includes(b.kind) ? b.kind : null;
+    if (!kind) throw new HttpError(400, 'اختر نوع الطلب');
+    const sku = text(b.sku, 60);
+    if (!sku) throw new HttpError(400, 'اكتب كود المنتج');
+    const reason = text(b.reason, 1000);
+    if (!reason) throw new HttpError(400, 'اكتب السبب');
+    const now = Date.now();
+    const res = db.prepare('INSERT INTO requests (user_id, date, kind, sku, quantity, reason, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(user.id, localDate(now), kind, sku, num(b.quantity, 1, 1e6), reason, now, now);
     return { id: Number(res.lastInsertRowid) };
+  }, { auth: true });
+  r.put('/api/requests/:id', async ({ req, params, user }) => {
+    requireAdmin(user);
+    const q = db.prepare('SELECT * FROM requests WHERE id = ?').get(Number(params.id));
+    if (!q) throw new HttpError(404, 'الطلب غير موجود');
+    const b = parseJson(await readBody(req));
+    const status = ['pending', 'approved', 'rejected', 'done'].includes(b.status) ? b.status : q.status;
+    db.prepare('UPDATE requests SET status = ?, response = ?, handled_by = ?, updated_at = ? WHERE id = ?')
+      .run(status, b.response !== undefined ? text(b.response, 1000) : q.response, user.id, Date.now(), q.id);
+    audit(db, user.id, 'request.update', q.user_id, { id: q.id, status });
+    return { ok: true };
   }, { auth: true });
   r.delete('/api/stock/:id', ({ params, user }) => {
     requireAdmin(user);
@@ -232,7 +306,8 @@ export function createApp(db) {
     const date = needDate(url.searchParams.get('date'), localDate());
     const rep = dailyReport(db, date);
     const openTickets = db.prepare("SELECT COUNT(*) n FROM tickets WHERE status != 'closed'").get().n;
-    return { ...rep, openTickets, flagLabels: FLAG_LABELS, now: Date.now() };
+    const pendingRequests = db.prepare("SELECT COUNT(*) n FROM requests WHERE status = 'pending'").get().n;
+    return { ...rep, openTickets, pendingRequests, flagLabels: FLAG_LABELS, now: Date.now() };
   }, { auth: true });
   r.get('/api/attendance', ({ url, user }) => {
     requireAdmin(user);
@@ -368,7 +443,8 @@ export function createApp(db) {
   // ------------------------------------------------------------ manager: staff & settings
   r.get('/api/users', ({ user }) => {
     requireAdmin(user);
-    return { users: db.prepare('SELECT * FROM users ORDER BY role, id').all().map(userView), periods: allPeriods(getSettings(db).schedule) };
+    const st = getSettings(db);
+    return { users: db.prepare('SELECT * FROM users ORDER BY role, id').all().map(userView), periods: allPeriods(st.schedule), permissions: permissionList(st) };
   }, { auth: true });
   const applyUser = (b, existing = null) => {
     const out = {};
@@ -381,7 +457,10 @@ export function createApp(db) {
     if ('salary' in b) out.salary = num(b.salary || 0, 0, 1e6);
     if ('periods' in b) out.periods = Array.isArray(b.periods) ? JSON.stringify(b.periods.map(String)) : null;
     if ('day_off' in b) out.day_off = b.day_off === null || b.day_off === '' ? null : Math.round(num(b.day_off, 0, 6));
-    if ('can_log_ops' in b) out.can_log_ops = b.can_log_ops ? 1 : 0;
+    if ('perms' in b) {
+      const valid = new Set(permissionList(getSettings(db)).map((p) => p.key));
+      out.perms = JSON.stringify((Array.isArray(b.perms) ? b.perms : []).map(String).filter((p) => valid.has(p)));
+    }
     if ('active' in b && existing?.role !== 'admin') out.active = b.active ? 1 : 0;
     if (b.password) { validatePassword(b.password); out.password_hash = hashPassword(b.password); }
     return out;
@@ -390,9 +469,9 @@ export function createApp(db) {
     requireAdmin(user);
     const b = parseJson(await readBody(req));
     const f = applyUser({ ...b, username: b.username, name: b.name });
-    const res = db.prepare(`INSERT INTO users (username, name, role, password_hash, salary, periods, day_off, can_log_ops, created_at)
+    const res = db.prepare(`INSERT INTO users (username, name, role, password_hash, salary, periods, day_off, perms, created_at)
                             VALUES (?, ?, 'employee', ?, ?, ?, ?, ?, ?)`)
-      .run(f.username, f.name, f.password_hash || null, f.salary || 0, f.periods ?? null, f.day_off ?? null, f.can_log_ops || 0, Date.now());
+      .run(f.username, f.name, f.password_hash || null, f.salary || 0, f.periods ?? null, f.day_off ?? null, f.perms || '[]', Date.now());
     audit(db, user.id, 'user.add', Number(res.lastInsertRowid), { name: f.name, username: f.username });
     return { id: Number(res.lastInsertRowid) };
   }, { auth: true });
@@ -424,7 +503,7 @@ export function createApp(db) {
     const d = dailyReport(db, date);
     csv(res, `wareef-daily-${date}`, [
       attendanceSection(d.attendance), punchesSection(d.punches),
-      opsSection(d.ops ? [d.ops] : [], d.channels), stockSection(d.stock),
+      opsSection(d.ops ? [d.ops] : [], d.channels, d.metrics), stockSection(d.stock), requestsSection(d.requests),
       ticketsSection(d.tickets), deductionsSection(d.deductions), debtsSection(d.debts),
     ]);
   });
@@ -440,7 +519,8 @@ export function createApp(db) {
   });
   exp('/api/export/ops', (url, res) => {
     const { from, to } = range(url, 31);
-    csv(res, `wareef-operations-${from}_${to}`, [opsSection(opsRows(db, from, to), getSettings(db).channels), stockSection(stockRows(db, from, to))]);
+    const st = getSettings(db);
+    csv(res, `wareef-operations-${from}_${to}`, [opsSection(opsRows(db, from, to), st.channels, st.metrics), stockSection(stockRows(db, from, to)), requestsSection(requestRows(db, from, to))]);
   });
   exp('/api/export/tickets', (url, res) => {
     const { from, to } = range(url, 31);

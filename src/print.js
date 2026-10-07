@@ -1,7 +1,7 @@
 // Server-rendered daily report: open it, print it, or save as PDF from the browser.
 import { localTime } from './time.js';
 import { FLAG_LABELS } from './punch.js';
-import { STATUS_LABELS, PUNCH_LABELS, DEDUCTION_LABELS, TICKET_KINDS, TICKET_STATUS, STOCK_KINDS } from './reports.js';
+import { STATUS_LABELS, PUNCH_LABELS, DEDUCTION_LABELS, TICKET_KINDS, TICKET_STATUS, STOCK_KINDS, REQUEST_KINDS, REQUEST_STATUS } from './reports.js';
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const t = (ts) => (ts ? localTime(ts) : '—');
@@ -20,6 +20,7 @@ export function renderDailyReport(d) {
   const count = (s) => att.filter((r) => r.status === s).length;
   const ops = d.ops;
   const opsTotal = ops ? ops.totalOrders : 0;
+  const metric = (k) => ops?.metrics?.[k]?.value;
 
   return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>التقرير اليومي ${esc(d.date)} | وريف</title><link rel="icon" href="/img/favicon.png"><link rel="stylesheet" href="/print.css"></head><body>
@@ -34,8 +35,8 @@ export function renderDailyReport(d) {
   <div><b>${count('late')}</b><span>متأخرون</span></div>
   <div><b>${count('absent') + count('partial')}</b><span>غياب كلي أو جزئي</span></div>
   <div><b>${n(opsTotal)}</b><span>طلبات اليوم</span></div>
-  <div><b>${n(ops?.shipments)}</b><span>شحنات</span></div>
-  <div><b>${n(ops?.returns)}</b><span>مرتجعات</span></div>
+  <div><b>${n(metric('shipments'))}</b><span>شحنات</span></div>
+  <div><b>${n(metric('returns_warehouse'))}</b><span>مرتجعات للمستودع</span></div>
 </section>
 
 <h2>الحضور والانصراف</h2>
@@ -47,15 +48,25 @@ ${table(['الموظف', 'الحالة', 'أول حضور', 'آخر انصراف
 ${table(['الوقت', 'الموظف', 'النوع', 'ملاحظة', 'مؤشرات'],
     d.punches.filter((p) => !p.voided).map((p) => [t(p.ts), esc(p.user_name), PUNCH_LABELS[p.type], esc(p.note), esc(p.flags.map((f) => FLAG_LABELS[f] || f).join('، '))]), 'لا توجد بصمات')}
 
-<h2>الطلبات والشحن</h2>
-${ops ? table(['القناة', 'عدد الطلبات', 'المبلغ (ر.س)'],
+<h2>الطلبات حسب القناة</h2>
+${ops && ops.totalOrders ? table(['القناة', 'عدد الطلبات', 'المبلغ (ر.س)'],
     [...d.channels.map((c) => [esc(c.name), n(ops.channels[c.key]?.count), n(ops.channels[c.key]?.amount)]),
       ['<b>الإجمالي</b>', `<b>${n(ops.totalOrders)}</b>`, `<b>${n(ops.totalAmount)}</b>`]])
-    + (ops.notes ? `<p class="note">${esc(ops.notes)}</p>` : '') : '<p class="empty">لم تُسجَّل عمليات هذا اليوم</p>'}
+    + (ops.notes ? `<p class="note">${esc(ops.notes)}</p>` : '') : '<p class="empty">لم تُسجَّل طلبات القنوات لهذا اليوم</p>'}
 
-<h2>مرتجعات التجار والبضائع الجديدة</h2>
-${table(['النوع', 'التاجر / المورد', 'الوصف', 'الكمية', 'القيمة', 'ملاحظة'],
-    d.stock.map((s) => [STOCK_KINDS[s.kind], esc(s.party), esc(s.description), n(s.quantity), n(s.value), esc(s.note)]))}
+<h2>الأرقام اليومية</h2>
+${table(['البند', 'العدد', 'ملاحظات', 'سجّلها'], d.metrics.filter((m) => ops?.metrics?.[m.key]).map((m) => {
+    const v = ops.metrics[m.key];
+    return [esc(m.name), `<b>${n(v.value)}</b>`, esc(v.note), esc(v.by)];
+  }), 'لم تُسجَّل أرقام لهذا اليوم')}
+
+<h2>فواتير البضائع ومرتجعات التجار</h2>
+${table(['النوع', 'التاجر', 'رقم الفاتورة', 'كود المنتج', 'العدد', 'القيمة', 'ملاحظة'],
+    d.stock.map((s) => [STOCK_KINDS[s.kind], esc(s.party), esc(s.invoice_no), esc(s.sku || s.description), n(s.quantity), n(s.value), esc(s.note)]))}
+
+<h2>طلبات الفسح والنواقص</h2>
+${table(['#', 'الموظف', 'النوع', 'كود المنتج', 'العدد', 'السبب', 'الحالة'],
+    d.requests.map((q) => [q.id, esc(q.user_name), REQUEST_KINDS[q.kind], esc(q.sku), n(q.quantity), esc(q.reason), REQUEST_STATUS[q.status]]))}
 
 <h2>الملاحظات والإنجازات</h2>
 ${table(['#', 'الموظف', 'النوع', 'العنوان', 'التفاصيل', 'الحالة'],

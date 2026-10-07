@@ -36,7 +36,7 @@ const TK = { achievement: 'إنجاز يومي', note: 'ملاحظة', issue: '�
 const TS = { open: ['مفتوحة', 'warn'], in_progress: ['قيد المعالجة', 'info'], closed: ['مغلقة', 'good'] };
 const PRI = { low: 'منخفضة', normal: 'عادية', high: 'عالية' };
 const EXC = { leave: 'إجازة', sick: 'مرضية', holiday: 'إجازة رسمية للجميع', excused: 'عذر مقبول' };
-const STOCK = { merchant_return: 'مرتجع تجار', new_goods: 'بضاعة جديدة' };
+const STOCK = { merchant_return: 'مرتجع للتاجر', new_goods: 'فاتورة بضاعة' };
 let FLAGS = {};
 
 const pill = (label, tone = '') => `<span class="pill ${tone}">${esc(label)}</span>`;
@@ -121,6 +121,7 @@ const ICONS = {
   user: '<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>',
   out: '<path d="M15 4h4a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1h-4M10 17l-5-5 5-5M5 12h11"/>',
   down: '<path d="M12 4v11M7 10l5 5 5-5M5 20h14"/>',
+  swap: '<path d="M7 4 3 8l4 4M3 8h13a4 4 0 0 1 4 4M17 20l4-4-4-4M21 16H8a4 4 0 0 1-4-4"/>',
 };
 const icon = (n) => `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true">${ICONS[n]}</svg>`;
 
@@ -131,6 +132,7 @@ async function boot() {
     ME = me.user;
     ME.channels = me.channels;
     ME.periods = me.periods;
+    ME.metrics = me.metrics;
     skew = me.now - Date.now();
     tz = me.tzOffset;
     window.addEventListener('hashchange', route);
@@ -161,13 +163,14 @@ function navItems() {
   if (ME.role === 'admin') {
     return [
       ['dashboard', 'لوحة اليوم', 'home'], ['attendance', 'الحضور والانصراف', 'clock'], ['payroll', 'الرواتب', 'wallet'],
-      ['money', 'الخصومات والسلف', 'coins'], ['ops', 'العمليات اليومية', 'box'], ['tickets', 'التذاكر', 'ticket'],
+      ['money', 'الخصومات والسلف', 'coins'], ['ops', 'العمليات اليومية', 'box'], ['requests', 'الفسح والنواقص', 'swap'], ['tickets', 'التذاكر', 'ticket'],
       ['flags', 'مؤشرات التلاعب', 'shield'], ['staff', 'الموظفون', 'users'], ['reports', 'التقارير والتصدير', 'file'], ['settings', 'الإعدادات', 'gear'],
     ];
   }
   return [
     ['today', 'البصمة', 'clock'], ['mine', 'سجلي', 'cal'], ['tickets', 'تذاكري', 'ticket'],
-    ...(ME.can_log_ops ? [['ops', 'العمليات', 'box']] : []), ['account', 'حسابي', 'user'],
+    ...(ME.perms.some((p) => p === 'orders' || p === 'stock' || p.startsWith('m:')) ? [['ops', 'العمليات', 'box']] : []),
+    ...(ME.perms.includes('requests') ? [['requests', 'الفسح والنواقص', 'swap']] : []), ['account', 'حسابي', 'user'],
   ];
 }
 
@@ -333,6 +336,7 @@ PAGES.dashboard = async () => {
   const onLeave = att.filter((r) => r.liveState === 'leave').length;
   const flagged = d.punches.filter((p) => p.flags.length && !p.voided && !(p.flags.length === 1 && p.flags[0] === 'manager_entry')).length;
   const ops = d.ops;
+  const mv = (k) => ops?.metrics?.[k]?.value || 0;
   const isToday = date === today();
   const hour = +localIso(nowMs()).slice(11, 13);
   const greet = !isToday ? `يوم <b>${esc(dayName(date))}</b>` : hour < 12 ? 'صباح <b>الخير</b>' : 'مساء <b>الخير</b>';
@@ -364,8 +368,10 @@ PAGES.dashboard = async () => {
     <div class="band">
       <div><b data-count="${ops?.totalOrders || 0}">0</b><span>طلبات اليوم</span></div>
       <div><b data-count="${ops?.totalAmount || 0}">0</b><span>مبيعات اليوم (ر.س)</span></div>
-      <div><b data-count="${ops?.shipments || 0}">0</b><span>شحنات</span></div>
-      <div><b data-count="${ops?.returns || 0}">0</b><span>مرتجعات</span></div>
+      <div><b data-count="${mv('orders_prepared')}">0</b><span>طلبات مجهّزة</span></div>
+      <div><b data-count="${mv('shipments')}">0</b><span>شحنات</span></div>
+      <div><b data-count="${mv('returns_warehouse')}">0</b><span>مرتجعات للمستودع</span></div>
+      <div class="${d.pendingRequests ? 'warn' : ''}"><b data-count="${d.pendingRequests}">0</b><span>طلبات فسح ونواقص</span></div>
       <div class="${flagged ? 'bad' : ''}"><b data-count="${flagged}">0</b><span>بصمات مشبوهة</span></div>
       <div class="${d.openTickets ? 'warn' : ''}"><b data-count="${d.openTickets}">0</b><span>تذاكر مفتوحة</span></div>
     </div>
@@ -393,9 +399,17 @@ PAGES.dashboard = async () => {
         <div class="list">${d.tickets.map((t) => `<button class="item" type="button" data-t="${t.id}"><div class="top"><b>${esc(t.title)}</b>${pill(...TS[t.status])}</div><span class="muted small">${esc(t.user_name)} · ${TK[t.kind]} · ${fmtT(t.created_at)}</span></button>`).join('') || '<p class="muted">لا توجد تذاكر اليوم.</p>'}</div>
       </section>
     </div>
-    <section class="panel"><header><h2>مرتجعات التجار والبضائع الجديدة</h2></header>
-      ${table(['النوع', 'التاجر / المورد', 'الوصف', 'الكمية', 'القيمة'], d.stock.map((s) => `<tr><td>${pill(STOCK[s.kind], s.kind === 'new_goods' ? 'good' : 'warn')}</td><td>${esc(s.party)}</td><td class="wrap">${esc(s.description)}</td><td>${int(s.quantity)}</td><td>${money(s.value)}</td></tr>`), { empty: 'لا يوجد شيء مسجّل اليوم' })}
-    </section>`);
+    <div class="grid2">
+      <section class="panel"><header><h2>أرقام اليوم</h2><a class="link" href="#/ops">العمليات اليومية</a></header>
+        ${table(['البند', 'العدد', 'سجّلها', 'ملاحظات'], d.metrics.map((m) => {
+          const v = ops?.metrics?.[m.key];
+          return `<tr><td>${esc(m.name)}</td><td>${v ? `<b>${int(v.value)}</b>` : '<span class="muted">لم يُسجَّل</span>'}</td><td>${esc(v?.by || '')}</td><td class="wrap">${esc(v?.note || '')}</td></tr>`;
+        }))}
+      </section>
+      <section class="panel"><header><h2>فواتير البضائع ومرتجعات التجار</h2></header>
+        ${table(['النوع', 'التاجر', 'الفاتورة', 'كود المنتج', 'العدد'], d.stock.map((s) => `<tr><td>${pill(STOCK[s.kind], s.kind === 'new_goods' ? 'good' : 'warn')}</td><td>${esc(s.party)}</td><td dir="ltr">${esc(s.invoice_no)}</td><td dir="ltr">${esc(s.sku || s.description)}</td><td>${int(s.quantity)}</td></tr>`), { empty: 'لا يوجد شيء مسجّل اليوم' })}
+      </section>
+    </div>`);
   $('#dd', pg).onchange = (e) => { sessionStorage.setItem('dash-date', e.target.value || today()); refresh(); };
   $$('[data-u]', pg).forEach((b) => { b.addEventListener('click', () => dayDetail(+b.dataset.u, b.dataset.n, date)); });
   $$('[data-t]', pg).forEach((b) => { b.onclick = () => ticketModal(+b.dataset.t); });
@@ -726,64 +740,168 @@ function confirmDelete(root, sel, urlOf) {
 PAGES.ops = async () => {
   const date = sessionStorage.getItem('ops-date') || today();
   const d = await api(`/api/ops?from=${addDays(today(), -30)}&to=${today()}`);
-  const day = d.ops.find((o) => o.date === date) || { channels: {}, shipments: 0, returns: 0, notes: '' };
+  const day = d.ops.find((o) => o.date === date) || { channels: {}, metrics: {}, notes: '' };
   const isAdmin = ME.role === 'admin';
+  const may = (p) => isAdmin || ME.perms.includes(p);
+  const myMetrics = d.metrics.filter((m) => may(`m:${m.key}`));
   const tot = (k) => d.ops.reduce((t, o) => t + (o[k] || 0), 0);
+  const mtot = (k) => d.ops.reduce((t, o) => t + (o.metrics[k]?.value || 0), 0);
+  const tooOld = !isAdmin && date < addDays(today(), -3);
+
+  const ordersPanel = may('orders') ? `<section class="panel"><header><h2>طلبات القنوات</h2><span class="muted small">عدد الطلبات ومبلغها لكل قناة</span></header>
+    <form class="form" id="oF">
+      ${table(['القناة', 'عدد الطلبات', 'المبلغ (ر.س)'], d.channels.map((c) => `<tr><td><b>${esc(c.name)}</b></td>
+        <td><input type="number" min="0" step="1" inputmode="numeric" name="c_${c.key}" id="c-${c.key}" value="${day.channels[c.key]?.count ?? ''}" placeholder="0" aria-label="طلبات ${esc(c.name)}"></td>
+        <td><input type="number" min="0" step="0.01" inputmode="decimal" name="a_${c.key}" id="a-${c.key}" value="${day.channels[c.key]?.amount ?? ''}" placeholder="0" aria-label="مبلغ ${esc(c.name)}"></td></tr>`))}
+      <label class="f">ملاحظات اليوم<textarea name="notes" id="o-notes" placeholder="أي شيء مهم: تأخر شركة شحن، نفاد منتج...">${esc(day.notes)}</textarea></label>
+      <button class="btn" type="submit" ${tooOld ? 'disabled' : ''}>حفظ طلبات ${fmtDate(date)}</button>
+    </form></section>` : '';
+
+  const metricsPanel = myMetrics.length ? `<section class="panel"><header><h2>${isAdmin ? 'الأرقام اليومية' : 'أرقامي اليومية'}</h2><span class="muted small">${fmtDate(date)}</span></header>
+    <form class="form" id="mF">
+      ${myMetrics.map((m) => `<div class="row">
+        <label class="f">${esc(m.name)}<input type="number" min="0" step="1" inputmode="numeric" name="v_${m.key}" id="m-${m.key}" value="${day.metrics[m.key]?.value ?? ''}" placeholder="0"></label>
+        ${m.note ? `<label class="f" style="flex:2 1 220px">ملاحظات ${esc(m.name)}<textarea name="n_${m.key}" id="mn-${m.key}" rows="2" placeholder="اكتب تفاصيل كل إشكالية...">${esc(day.metrics[m.key]?.note || '')}</textarea></label>` : ''}
+        ${day.metrics[m.key]?.by && isAdmin ? `<span class="muted small" style="flex:0 0 auto">سجّلها ${esc(day.metrics[m.key].by)}</span>` : ''}
+      </div>`).join('')}
+      <button class="btn" type="submit" ${tooOld ? 'disabled' : ''}>حفظ الأرقام</button>
+    </form></section>` : '';
+
+  const stockPanel = may('stock') ? `<section class="panel"><header><h2>فواتير البضائع ومرتجعات التجار</h2></header>
+    <form class="form" id="sF">
+      <div class="seg" role="radiogroup" aria-label="النوع"><button type="button" class="on" data-k="new_goods">فاتورة بضاعة جديدة</button><button type="button" data-k="merchant_return">أصناف أُرجعت للتاجر</button></div>
+      <input type="hidden" name="kind" id="s-kind" value="new_goods">
+      <div class="row">
+        <label class="f">التاجر<input name="party" id="s-party" required></label>
+        <label class="f" id="s-inv-l">رقم الفاتورة<input name="invoice_no" id="s-inv" dir="ltr"></label>
+        <label class="f">التاريخ<input type="date" name="date" id="s-date" value="${date}" max="${today()}"></label>
+      </div>
+      <div id="lines">${lineRow(0)}</div>
+      <button type="button" class="link" id="addLine" style="justify-self:start">+ إضافة صنف</button>
+      <label class="f">ملاحظة<input name="note" id="s-note"></label>
+      <button class="btn" type="submit">حفظ</button>
+    </form></section>` : '';
+
   const pg = render(`
-    <div class="topline"><h1>العمليات اليومية</h1><div class="tools">${isAdmin ? `<a class="btn ghost" href="/api/export/ops?from=${addDays(today(), -30)}&to=${today()}">${icon('down')}تصدير</a>` : ''}</div></div>
-    <div class="grid2">
-      <section class="panel"><header><h2>طلبات وشحنات يوم</h2><input type="date" id="od" value="${date}" max="${today()}" aria-label="التاريخ"></header>
-        <form class="form" id="oF">
-          ${table(['القناة', 'عدد الطلبات', 'المبلغ (ر.س)'], d.channels.map((c) => `<tr><td><b>${esc(c.name)}</b></td>
-            <td><input type="number" min="0" step="1" inputmode="numeric" name="c_${c.key}" id="c-${c.key}" value="${day.channels[c.key]?.count || ''}" placeholder="0" aria-label="طلبات ${esc(c.name)}"></td>
-            <td><input type="number" min="0" step="0.01" inputmode="decimal" name="a_${c.key}" id="a-${c.key}" value="${day.channels[c.key]?.amount || ''}" placeholder="0" aria-label="مبلغ ${esc(c.name)}"></td></tr>`))}
-          <div class="row">
-            <label class="f">عدد الشحنات<input type="number" min="0" step="1" inputmode="numeric" name="shipments" id="o-ship" value="${day.shipments || ''}" placeholder="0"></label>
-            <label class="f">عدد المرتجعات<input type="number" min="0" step="1" inputmode="numeric" name="returns" id="o-ret" value="${day.returns || ''}" placeholder="0"></label>
-          </div>
-          <label class="f">ملاحظات اليوم<textarea name="notes" id="o-notes" placeholder="أي شيء مهم: تأخر شركة شحن، نفاد منتج، ...">${esc(day.notes)}</textarea></label>
-          <button class="btn" type="submit">حفظ عمليات ${fmtDate(date)}</button>
-        </form>
-      </section>
-      <section class="panel"><header><h2>مرتجعات التجار والبضائع الجديدة</h2></header>
-        <form class="form" id="sF">
-          <div class="seg" role="radiogroup" aria-label="النوع"><button type="button" class="on" data-k="new_goods">بضاعة جديدة</button><button type="button" data-k="merchant_return">مرتجع تجار</button></div>
-          <input type="hidden" name="kind" id="s-kind" value="new_goods">
-          <div class="row">
-            <label class="f">التاجر / المورد<input name="party" id="s-party"></label>
-            <label class="f">التاريخ<input type="date" name="date" id="s-date" value="${date}" max="${today()}"></label>
-          </div>
-          <label class="f">الوصف (المنتجات، المقاسات، الألوان)<textarea name="description" id="s-desc"></textarea></label>
-          <div class="row">
-            <label class="f">الكمية<input type="number" min="0" step="1" name="quantity" id="s-qty"></label>
-            <label class="f">القيمة (ر.س)<input type="number" min="0" step="0.01" name="value" id="s-val"></label>
-          </div>
-          <label class="f">ملاحظة<input name="note" id="s-note"></label>
-          <button class="btn" type="submit">إضافة</button>
-        </form>
-      </section>
-    </div>
-    <section class="panel"><header><h2>آخر 30 يوماً</h2></header>
-      ${table(['اليوم', ...d.channels.map((c) => esc(c.name)), 'الإجمالي', 'المبلغ', 'شحنات', 'مرتجعات', 'ملاحظات'],
-        d.ops.map((o) => `<tr class="click" data-od="${o.date}"><td>${fmtDate(o.date)}</td>${d.channels.map((c) => `<td>${int(o.channels[c.key]?.count)}</td>`).join('')}<td><b>${int(o.totalOrders)}</b></td><td>${money(o.totalAmount)}</td><td>${int(o.shipments)}</td><td>${int(o.returns)}</td><td class="wrap">${esc(o.notes)}</td></tr>`),
-        { empty: 'لم تُسجَّل عمليات بعد', foot: d.ops.length ? ['الإجمالي', ...d.channels.map((c) => int(d.ops.reduce((t, o) => t + (o.channels[c.key]?.count || 0), 0))), int(tot('totalOrders')), money(tot('totalAmount')), int(tot('shipments')), int(tot('returns')), ''] : null })}
+    <div class="topline"><h1>العمليات اليومية</h1><div class="tools">
+      <input type="date" id="od" value="${date}" max="${today()}" aria-label="التاريخ">
+      ${isAdmin ? `<a class="btn ghost" href="/api/export/ops?from=${addDays(today(), -30)}&to=${today()}">${icon('down')}تصدير</a>` : ''}</div></div>
+    ${tooOld ? '<p class="muted">التعديل متاح لآخر 3 أيام فقط. للتعديل على يوم أقدم تواصل مع المدير.</p>' : ''}
+    <div class="grid2">${ordersPanel}${metricsPanel}</div>
+    ${stockPanel}
+    <section class="panel"><header><h2>آخر 30 يوماً</h2><span class="muted small">اضغط على يوم لعرضه وتعديله</span></header>
+      ${table(['اليوم', ...(may('orders') ? [...d.channels.map((c) => esc(c.name)), 'الإجمالي', 'المبلغ'] : []), ...myMetrics.map((m) => esc(m.name)), 'ملاحظات'],
+        d.ops.map((o) => `<tr class="click" data-od="${o.date}"><td>${fmtDate(o.date)}</td>
+          ${may('orders') ? `${d.channels.map((c) => `<td>${int(o.channels[c.key]?.count)}</td>`).join('')}<td><b>${int(o.totalOrders)}</b></td><td>${money(o.totalAmount)}</td>` : ''}
+          ${myMetrics.map((m) => `<td>${o.metrics[m.key] ? int(o.metrics[m.key].value) : '—'}</td>`).join('')}
+          <td class="wrap">${esc([o.notes, ...myMetrics.map((m) => o.metrics[m.key]?.note).filter(Boolean)].filter(Boolean).join(' · '))}</td></tr>`),
+        { empty: 'لم يُسجَّل شيء بعد', foot: d.ops.length ? ['الإجمالي', ...(may('orders') ? [...d.channels.map((c) => int(d.ops.reduce((t, o) => t + (o.channels[c.key]?.count || 0), 0))), int(tot('totalOrders')), money(tot('totalAmount'))] : []), ...myMetrics.map((m) => int(mtot(m.key))), ''] : null })}
     </section>
-    <section class="panel"><header><h2>سجل البضائع والمرتجعات</h2></header>
-      ${table(['التاريخ', 'النوع', 'التاجر / المورد', 'الوصف', 'الكمية', 'القيمة', 'ملاحظة', 'سجّلها', ...(isAdmin ? [''] : [])],
-        d.stock.map((s) => `<tr><td>${s.date}</td><td>${pill(STOCK[s.kind], s.kind === 'new_goods' ? 'good' : 'warn')}</td><td>${esc(s.party)}</td><td class="wrap">${esc(s.description)}</td><td>${int(s.quantity)}</td><td>${money(s.value)}</td><td class="wrap">${esc(s.note)}</td><td>${esc(s.created_by_name || '')}</td>${isAdmin ? `<td><button class="link bad" data-sd="${s.id}">حذف</button></td>` : ''}</tr>`),
+    ${may('stock') ? `<section class="panel"><header><h2>سجل الفواتير والمرتجعات للتجار</h2></header>
+      ${table(['التاريخ', 'النوع', 'التاجر', 'رقم الفاتورة', 'كود المنتج', 'العدد', 'القيمة', 'ملاحظة', 'سجّلها', ...(isAdmin ? [''] : [])],
+        d.stock.map((s) => `<tr><td>${s.date}</td><td>${pill(STOCK[s.kind], s.kind === 'new_goods' ? 'good' : 'warn')}</td><td>${esc(s.party)}</td><td dir="ltr">${esc(s.invoice_no)}</td><td dir="ltr"><b>${esc(s.sku || s.description)}</b></td><td>${int(s.quantity)}</td><td>${s.value ? money(s.value) : '—'}</td><td class="wrap">${esc(s.note)}</td><td>${esc(s.created_by_name || '')}</td>${isAdmin ? `<td><button class="link bad" data-sd="${s.id}">حذف</button></td>` : ''}</tr>`),
         { empty: 'لا توجد سجلات' })}
-    </section>`);
+    </section>` : ''}`);
+
   $('#od', pg).onchange = (e) => { sessionStorage.setItem('ops-date', e.target.value || today()); refresh(); };
   $$('tr[data-od]', pg).forEach((tr) => { tr.onclick = () => { sessionStorage.setItem('ops-date', tr.dataset.od); refresh(); }; });
-  $('#oF', pg).onsubmit = async (e) => {
+  const oF = $('#oF', pg);
+  if (oF) oF.onsubmit = async (e) => {
     e.preventDefault();
     const f = formData(e.target);
     const channels = Object.fromEntries(d.channels.map((c) => [c.key, { count: f[`c_${c.key}`] || 0, amount: f[`a_${c.key}`] || 0 }]));
-    if (await act($('button[type=submit]', e.target), () => api(`/api/ops/${date}`, { method: 'PUT', body: { channels, shipments: f.shipments || 0, returns: f.returns || 0, notes: f.notes } }), 'تم الحفظ')) refresh();
+    if (await act($('button[type=submit]', e.target), () => api(`/api/ops/${date}`, { method: 'PUT', body: { channels, notes: f.notes } }), 'تم حفظ الطلبات')) refresh();
   };
-  $$('.seg button', pg).forEach((b) => { b.onclick = () => { $$('.seg button', pg).forEach((x) => x.classList.toggle('on', x === b)); $('#s-kind', pg).value = b.dataset.k; }; });
-  $('#sF', pg).onsubmit = async (e) => { e.preventDefault(); if (await act($('button[type=submit]', e.target), () => api('/api/stock', { method: 'POST', body: formData(e.target) }), 'تمت الإضافة')) refresh(); };
+  const mF = $('#mF', pg);
+  if (mF) mF.onsubmit = async (e) => {
+    e.preventDefault();
+    const f = formData(e.target);
+    const metrics = Object.fromEntries(myMetrics.filter((m) => f[`v_${m.key}`] !== '' || f[`n_${m.key}`]).map((m) => [m.key, { value: f[`v_${m.key}`] || 0, note: f[`n_${m.key}`] || '' }]));
+    if (!Object.keys(metrics).length) return toast('اكتب رقماً واحداً على الأقل', true);
+    if (await act($('button[type=submit]', e.target), () => api(`/api/ops/${date}`, { method: 'PUT', body: { metrics } }), 'تم حفظ الأرقام')) refresh();
+  };
+  const sF = $('#sF', pg);
+  if (sF) {
+    let n = 1;
+    $('#addLine', pg).onclick = () => { $('#lines', pg).insertAdjacentHTML('beforeend', lineRow(n++)); };
+    $('#lines', pg).addEventListener('click', (e) => { if (e.target.matches('[data-rmline]') && $$('.line', pg).length > 1) e.target.closest('.line').remove(); });
+    $$('.seg button', pg).forEach((b) => { b.onclick = () => {
+      $$('.seg button', pg).forEach((x) => x.classList.toggle('on', x === b));
+      $('#s-kind', pg).value = b.dataset.k;
+      $('#s-inv-l', pg).firstChild.textContent = b.dataset.k === 'new_goods' ? 'رقم الفاتورة' : 'رقم إشعار الإرجاع (اختياري)';
+    }; });
+    sF.onsubmit = async (e) => {
+      e.preventDefault();
+      const f = formData(e.target);
+      const lines = $$('.line', pg).map((l) => ({ sku: $('[name=sku]', l).value.trim(), quantity: $('[name=qty]', l).value, value: $('[name=val]', l).value }))
+        .filter((l) => l.sku || l.quantity);
+      if (!lines.length) return toast('أضف صنفاً واحداً على الأقل: كود المنتج والعدد', true);
+      if (await act($('button[type=submit]', e.target), () => api('/api/stock', { method: 'POST', body: { kind: f.kind, party: f.party, invoice_no: f.invoice_no, date: f.date, note: f.note, lines } }), `تم حفظ ${lines.length} صنف`)) refresh();
+    };
+  }
   confirmDelete(pg, '[data-sd]', (id) => `/api/stock/${id}`);
+};
+
+function lineRow(i) {
+  return `<div class="row line">
+    <label class="f">كود المنتج<input name="sku" id="l-sku-${i}" dir="ltr" autocomplete="off"></label>
+    <label class="f">العدد<input name="qty" id="l-qty-${i}" type="number" min="1" step="1" inputmode="numeric"></label>
+    <label class="f">القيمة (اختياري)<input name="val" id="l-val-${i}" type="number" min="0" step="0.01" inputmode="decimal"></label>
+    <button type="button" class="link bad" data-rmline style="flex:0 0 auto;align-self:center">حذف</button>
+  </div>`;
+}
+
+// ------------------------------------------------------------------ release & shortage requests
+const RQ = { release: 'فسح لإرجاع منتجات', shortage: 'طلب نواقص' };
+const RS = { pending: ['بانتظار المدير', 'warn'], approved: ['تمت الموافقة', 'info'], rejected: ['مرفوض', 'bad'], done: ['تم التنفيذ', 'good'] };
+PAGES.requests = async () => {
+  const isAdmin = ME.role === 'admin';
+  const status = sessionStorage.getItem('rq-status') || '';
+  const d = await api(`/api/requests?status=${status}`);
+  const pg = render(`
+    <div class="topline"><h1>طلبات الفسح والنواقص</h1><div class="tools">
+      <select id="rq-st" aria-label="الحالة">${opt('', 'كل الحالات', status)}${Object.entries(RS).map(([k, v]) => opt(k, v[0], status)).join('')}</select></div></div>
+    <div class="grid2">
+      ${ME.perms.includes('requests') ? `<section class="panel"><header><h2>طلب جديد</h2></header>
+        <form class="form" id="rqF">
+          <div class="seg" role="radiogroup" aria-label="نوع الطلب"><button type="button" class="on" data-k="release">فسح لإرجاع منتجات</button><button type="button" data-k="shortage">طلب نواقص</button></div>
+          <input type="hidden" name="kind" id="rq-kind" value="release">
+          <div class="row">
+            <label class="f">كود المنتج<input name="sku" id="rq-sku" dir="ltr" required autocomplete="off"></label>
+            <label class="f">العدد<input name="quantity" id="rq-qty" type="number" min="1" step="1" inputmode="numeric" required></label>
+          </div>
+          <label class="f">السبب<textarea name="reason" id="rq-reason" required placeholder="مثال: عيب مصنعي في الخياطة، أو: نفد المقاس 54 والطلب عليه مستمر"></textarea></label>
+          <button class="btn" type="submit">رفع الطلب</button>
+        </form></section>` : ''}
+      <section class="panel" style="${ME.perms.includes('requests') ? '' : 'grid-column:1/-1'}"><header><h2>${d.requests.length} طلب</h2></header>
+        ${table(['#', 'التاريخ', ...(isAdmin ? ['الموظف'] : []), 'النوع', 'كود المنتج', 'العدد', 'السبب', 'الحالة', 'رد المدير'],
+          d.requests.map((q) => `<tr class="${isAdmin ? 'click' : ''}" data-rq="${q.id}"><td>${q.id}</td><td>${fmtDate(q.date)}</td>${isAdmin ? `<td>${esc(q.user_name)}</td>` : ''}
+            <td>${RQ[q.kind]}</td><td dir="ltr"><b>${esc(q.sku)}</b></td><td>${int(q.quantity)}</td><td class="wrap">${esc(q.reason)}</td><td>${pill(...RS[q.status])}</td><td class="wrap">${esc(q.response) || '—'}</td></tr>`),
+          { empty: 'لا توجد طلبات' })}
+        ${isAdmin ? '<p class="muted small">اضغط على أي طلب لتغيير حالته أو الرد عليه.</p>' : ''}
+      </section>
+    </div>`);
+  $('#rq-st', pg).onchange = (e) => { sessionStorage.setItem('rq-status', e.target.value); refresh(); };
+  const f = $('#rqF', pg);
+  if (f) {
+    $$('.seg button', pg).forEach((b) => { b.onclick = () => { $$('.seg button', pg).forEach((x) => x.classList.toggle('on', x === b)); $('#rq-kind', pg).value = b.dataset.k; }; });
+    f.onsubmit = async (e) => { e.preventDefault(); if (await act($('button[type=submit]', e.target), () => api('/api/requests', { method: 'POST', body: formData(e.target) }), 'تم رفع الطلب')) refresh(); };
+  }
+  if (isAdmin) {
+    $$('tr[data-rq]', pg).forEach((tr) => { tr.onclick = () => {
+      const q = d.requests.find((x) => x.id === +tr.dataset.rq);
+      modal(`طلب #${q.id} · ${RQ[q.kind]}`, `
+        <p><b>${esc(q.user_name)}</b> · ${fmtDate(q.date)} · كود <b dir="ltr">${esc(q.sku)}</b> · العدد ${int(q.quantity)}</p>
+        <div class="msg">${esc(q.reason)}</div>
+        <form class="form" id="rqU">
+          <label class="f">الحالة<select name="status" id="rqu-st">${Object.entries(RS).map(([k, v]) => opt(k, v[0], q.status)).join('')}</select></label>
+          <label class="f">رد المدير<textarea name="response" id="rqu-resp">${esc(q.response)}</textarea></label>
+          <button class="btn" type="submit">حفظ</button>
+        </form>`, (dl) => {
+        $('#rqU', dl).onsubmit = async (e) => { e.preventDefault(); if (await act($('button', e.target), () => api(`/api/requests/${q.id}`, { method: 'PUT', body: formData(e.target) }), 'تم الحفظ')) { dl.close(); refresh(); } };
+      });
+    }; });
+  }
 };
 
 // ------------------------------------------------------------------ tickets
@@ -886,15 +1004,16 @@ PAGES.flags = async () => {
 PAGES.staff = async () => {
   staffCache = null;
   const d = await api('/api/users');
+  const permName = (k) => d.permissions.find((p) => p.key === k)?.name.replace('رقم يومي: ', '') || k;
   const periodName = (ids) => (ids ? ids.map((id) => d.periods.find((p) => p.id === id)?.name || id).join('، ') : 'كل الفترات');
   const pg = render(`
     <div class="topline"><h1>الموظفون</h1><button class="btn" id="addU" type="button">إضافة موظف</button></div>
     <section class="panel">
-      ${table(['الاسم', 'اسم المستخدم', 'الدخول', 'الراتب', 'الفترات', 'الإجازة الأسبوعية', 'العمليات اليومية', 'الحالة', ''],
+      ${table(['الاسم', 'اسم المستخدم', 'الدخول', 'الراتب', 'الفترات', 'الإجازة الأسبوعية', 'الصلاحيات', 'الحالة', ''],
         d.users.map((u) => `<tr><td><b>${esc(u.name)}</b>${u.role === 'admin' ? ` ${pill('مدير', 'info')}` : ''}</td><td dir="ltr">${esc(u.username)}</td>
           <td>${u.has_password ? pill('مفعّل', 'good') : pill('بدون كلمة مرور', 'warn')}</td><td>${u.role === 'admin' ? '—' : money(u.salary)}</td>
           <td class="wrap">${u.role === 'admin' ? '—' : esc(periodName(u.periods))}</td><td>${u.day_off === null ? 'لا يوجد' : DAYS[u.day_off]}</td>
-          <td>${u.role === 'admin' || u.can_log_ops ? 'نعم' : '—'}</td><td>${u.active ? pill('نشط', 'good') : pill('موقوف', '')}</td>
+          <td class="wrap small">${u.role === 'admin' ? 'كل شيء' : (u.perms.map((k) => esc(permName(k))).join('، ') || '—')}</td><td>${u.active ? pill('نشط', 'good') : pill('موقوف', '')}</td>
           <td><button class="btn sm ghost" data-e="${u.id}">تعديل</button></td></tr>`))}
       <p class="muted small">الموظف بدون كلمة مرور لا يستطيع الدخول. اضغط «تعديل» وحدد له كلمة مرور ثم أعطه اسم المستخدم وكلمة المرور.</p>
     </section>`);
@@ -907,7 +1026,8 @@ PAGES.staff = async () => {
       <fieldset style="border:1px solid var(--line);border-radius:8px;padding:10px 14px"><legend class="small">فترات الدوام</legend>
         <div class="row">${d.periods.map((p) => `<label class="check"><input type="checkbox" name="p_${p.id}" id="u-p-${p.id}" ${!u?.periods || u.periods.includes(p.id) ? 'checked' : ''}>${esc(p.name)}</label>`).join('')}</div></fieldset>
       <div class="row"><label class="f">الإجازة الأسبوعية<select name="day_off" id="u-off">${opt('', 'لا يوجد', u?.day_off ?? '')}${DAYS.map((n, i) => opt(i, n, u?.day_off ?? '')).join('')}</select></label></div>
-      <label class="check"><input type="checkbox" name="can_log_ops" id="u-ops" ${u?.can_log_ops ? 'checked' : ''}>يستطيع تسجيل العمليات اليومية (الطلبات والشحنات والمرتجعات)</label>
+      <fieldset style="border:1px solid var(--line);border-radius:8px;padding:10px 14px"><legend class="small">الصلاحيات: وش يقدر يسجّل</legend>
+        <div style="display:grid;gap:6px">${d.permissions.map((p) => `<label class="check"><input type="checkbox" name="perm_${p.key}" id="u-perm-${p.key.replace(':', '-')}" ${u?.perms?.includes(p.key) ? 'checked' : ''}>${esc(p.name)}</label>`).join('')}</div></fieldset>
       ${u ? `<label class="check"><input type="checkbox" name="active" id="u-active" ${u.active ? 'checked' : ''}>حساب نشط (إلغاء التفعيل يوقف دخوله ويخفيه من التقارير)</label>` : ''}`}
       <button class="btn" type="submit">حفظ</button></form>`, (dl) => {
     $('#uF', dl).onsubmit = async (e) => {
@@ -915,7 +1035,7 @@ PAGES.staff = async () => {
       const f = formData(e.target);
       const body = { name: f.name, username: f.username, ...(f.password ? { password: f.password } : {}) };
       if (u?.role !== 'admin') {
-        Object.assign(body, { salary: f.salary || 0, day_off: f.day_off, can_log_ops: f.can_log_ops, periods: d.periods.filter((p) => f[`p_${p.id}`]).map((p) => p.id) });
+        Object.assign(body, { salary: f.salary || 0, day_off: f.day_off, perms: d.permissions.filter((p) => f[`perm_${p.key}`]).map((p) => p.key), periods: d.periods.filter((p) => f[`p_${p.id}`]).map((p) => p.id) });
         if (body.periods.length === d.periods.length) body.periods = null;
         if (u) body.active = f.active;
       }
@@ -973,6 +1093,7 @@ PAGES.settings = async () => {
   const s = await api('/api/settings');
   const order = [6, 0, 1, 2, 3, 4, 5];
   const perRow = (p) => `<div class="per"><input name="id" value="${esc(p.id)}" dir="ltr" placeholder="am" aria-label="المعرّف" style="flex:0 1 70px"><input name="name" value="${esc(p.name)}" placeholder="اسم الفترة" aria-label="اسم الفترة"><input type="time" name="start" value="${p.start}" aria-label="من"><input type="time" name="end" value="${p.end}" aria-label="إلى"><button type="button" class="link bad" data-rm>حذف</button></div>`;
+  const mtRow = (m) => `<div class="per"><input name="key" value="${esc(m.key)}" dir="ltr" placeholder="pending_chats" aria-label="المعرّف" style="flex:0 1 150px"><input name="name" value="${esc(m.name)}" placeholder="اسم البند" aria-label="اسم البند"><label class="check small"><input type="checkbox" name="note" ${m.note ? 'checked' : ''}>مع ملاحظات</label><button type="button" class="link bad" data-rm>حذف</button></div>`;
   const chRow = (c) => `<div class="per"><input name="key" value="${esc(c.key)}" dir="ltr" placeholder="salla" aria-label="المعرّف" style="flex:0 1 110px"><input name="name" value="${esc(c.name)}" placeholder="اسم القناة" aria-label="اسم القناة"><button type="button" class="link bad" data-rm>حذف</button></div>`;
   const pg = render(`
     <div class="topline"><h1>الإعدادات</h1></div>
@@ -996,6 +1117,10 @@ PAGES.settings = async () => {
       <label class="check"><input type="checkbox" id="s-req" ${s.security.require_geo ? 'checked' : ''}>إلزام الموظف بتفعيل الموقع عند البصمة</label>
       <label class="f" style="max-width:320px">أقصى فرق مقبول في ساعة الجوال (دقائق)<input type="number" id="s-skew" min="1" max="120" value="${s.security.max_clock_skew_minutes}"></label>
     </section>
+    <section class="panel"><header><h2>الأرقام اليومية</h2><span class="muted small">البنود اللي يسجّلها الموظفون يومياً. حدّد من يسجّل كل بند من صفحة الموظفين</span></header>
+      <div id="mts">${(s.metrics || []).map(mtRow).join('')}</div>
+      <button type="button" class="link" id="addMt">+ إضافة بند</button>
+    </section>
     <section class="panel"><header><h2>قنوات الطلبات</h2><span class="muted small">تظهر في صفحة العمليات اليومية والتقارير</span></header>
       <div id="chs">${s.channels.map(chRow).join('')}</div>
       <button type="button" class="link" id="addCh">+ إضافة قناة</button>
@@ -1005,6 +1130,7 @@ PAGES.settings = async () => {
     if (e.target.matches('[data-rm]')) e.target.closest('.per').remove();
     if (e.target.matches('[data-addp]')) e.target.previousElementSibling.insertAdjacentHTML('beforeend', perRow({ id: '', name: '', start: '09:00', end: '17:00' }));
   });
+  $('#addMt', pg).onclick = () => $('#mts', pg).insertAdjacentHTML('beforeend', mtRow({ key: '', name: '', note: false }));
   $('#addCh', pg).onclick = () => $('#chs', pg).insertAdjacentHTML('beforeend', chRow({ key: '', name: '' }));
   $('#s-here', pg).onclick = async (e) => {
     e.target.disabled = true;
@@ -1033,6 +1159,7 @@ PAGES.settings = async () => {
         max_clock_skew_minutes: $('#s-skew', pg).value,
       },
       channels: $$('#chs .per', pg).map((r) => ({ key: field(r, 'key'), name: field(r, 'name') })),
+      metrics: $$('#mts .per', pg).map((r) => ({ key: field(r, 'key'), name: field(r, 'name'), note: $('[name=note]', r).checked })),
     };
     if (await act(e.target, () => api('/api/settings', { method: 'PUT', body }), 'تم حفظ الإعدادات')) { staffCache = null; boot(); }
   };

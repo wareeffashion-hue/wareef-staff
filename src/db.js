@@ -148,6 +148,52 @@ const MIGRATIONS = [
   );
   CREATE INDEX audit_log_ts ON audit_log(ts);
   `,
+  // v2: per-employee permissions, daily metrics, release/shortage requests, invoice lines.
+  `
+  ALTER TABLE users ADD COLUMN perms TEXT NOT NULL DEFAULT '[]';
+  UPDATE users SET perms = '["orders","stock"]' WHERE can_log_ops = 1;
+  UPDATE users SET perms = '["orders","stock","m:returns_system"]' WHERE username = 'abdulmalik';
+  UPDATE users SET perms = '["m:shipments","m:returns_warehouse","m:orders_prepared"]' WHERE username = 'abdullah';
+  UPDATE users SET perms = '["requests"]' WHERE username = 'basem';
+  UPDATE users SET perms = '["m:daily_edits"]' WHERE username = 'safwan';
+  UPDATE users SET perms = '["m:pending_issues","m:pending_chats"]' WHERE username = 'monther';
+
+  -- One number (and optional note) per metric per day, e.g. orders prepared, pending chats.
+  CREATE TABLE daily_metrics (
+    date TEXT NOT NULL,
+    key TEXT NOT NULL,
+    value REAL NOT NULL DEFAULT 0,
+    note TEXT NOT NULL DEFAULT '',
+    updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (date, key)
+  );
+  INSERT INTO daily_metrics (date, key, value, updated_by, updated_at)
+    SELECT date, 'shipments', shipments, updated_by, updated_at FROM daily_ops WHERE shipments > 0;
+  INSERT INTO daily_metrics (date, key, value, updated_by, updated_at)
+    SELECT date, 'returns_system', returns, updated_by, updated_at FROM daily_ops WHERE returns > 0;
+
+  ALTER TABLE stock_moves ADD COLUMN invoice_no TEXT NOT NULL DEFAULT '';
+  ALTER TABLE stock_moves ADD COLUMN sku TEXT NOT NULL DEFAULT '';
+
+  -- kind: release (فسح لإرجاع منتجات) | shortage (طلب نواقص)
+  CREATE TABLE requests (
+    id INTEGER PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    date TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('release', 'shortage')),
+    sku TEXT NOT NULL,
+    quantity REAL NOT NULL CHECK (quantity > 0),
+    reason TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected', 'done')),
+    response TEXT NOT NULL DEFAULT '',
+    handled_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE INDEX requests_status ON requests(status, created_at);
+  CREATE INDEX requests_user ON requests(user_id, created_at);
+  `,
 ];
 
 export function openDb(path) {

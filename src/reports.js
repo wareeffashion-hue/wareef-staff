@@ -15,17 +15,31 @@ export const PUNCH_LABELS = { in: 'حضور', out: 'انصراف', leave: 'خر�
 export const DEDUCTION_LABELS = { late: 'تأخير', absence: 'غياب', early: 'انصراف مبكر', exit: 'خروج أثناء الدوام', violation: 'مخالفة', damage: 'تلف أو نقص', other: 'أخرى' };
 export const TICKET_KINDS = { achievement: 'إنجاز يومي', note: 'ملاحظة', issue: 'مشكلة', request: 'طلب' };
 export const TICKET_STATUS = { open: 'مفتوحة', in_progress: 'قيد المعالجة', closed: 'مغلقة' };
-export const STOCK_KINDS = { merchant_return: 'مرتجع تجار', new_goods: 'بضاعة جديدة' };
+export const STOCK_KINDS = { merchant_return: 'مرتجع للتاجر', new_goods: 'فاتورة بضاعة جديدة' };
+export const REQUEST_KINDS = { release: 'طلب فسح لإرجاع منتجات', shortage: 'طلب نواقص' };
+export const REQUEST_STATUS = { pending: 'بانتظار المدير', approved: 'تمت الموافقة', rejected: 'مرفوض', done: 'تم التنفيذ' };
 export const EXCUSE_KINDS = { leave: 'إجازة', sick: 'مرضية', holiday: 'إجازة رسمية', excused: 'عذر مقبول' };
 
+/** One row per day that has any operations data: channel orders plus every daily metric. */
 export function opsRows(db, from, to) {
   const { channels } = getSettings(db);
-  return db.prepare('SELECT * FROM daily_ops WHERE date BETWEEN ? AND ? ORDER BY date DESC').all(from, to).map((r) => {
-    const ch = JSON.parse(r.channels || '{}');
-    const orders = channels.reduce((t, c) => t + (Number(ch[c.key]?.count) || 0), 0);
-    const amount = channels.reduce((t, c) => t + (Number(ch[c.key]?.amount) || 0), 0);
-    return { ...r, channels: ch, totalOrders: orders, totalAmount: round2(amount) };
-  });
+  const days = new Map();
+  const day = (date) => {
+    if (!days.has(date)) days.set(date, { date, channels: {}, notes: '', metrics: {}, totalOrders: 0, totalAmount: 0 });
+    return days.get(date);
+  };
+  for (const r of db.prepare('SELECT * FROM daily_ops WHERE date BETWEEN ? AND ?').all(from, to)) {
+    const d = day(r.date);
+    d.channels = JSON.parse(r.channels || '{}');
+    d.notes = r.notes;
+    d.totalOrders = channels.reduce((t, c) => t + (Number(d.channels[c.key]?.count) || 0), 0);
+    d.totalAmount = round2(channels.reduce((t, c) => t + (Number(d.channels[c.key]?.amount) || 0), 0));
+  }
+  for (const m of db.prepare(`SELECT m.*, u.name AS by_name FROM daily_metrics m LEFT JOIN users u ON u.id = m.updated_by
+                              WHERE m.date BETWEEN ? AND ?`).all(from, to)) {
+    day(m.date).metrics[m.key] = { value: m.value, note: m.note, by: m.by_name || '' };
+  }
+  return [...days.values()].sort((a, b) => b.date.localeCompare(a.date));
 }
 
 export function stockRows(db, from, to) {
@@ -40,6 +54,11 @@ export function ticketRows(db, { from, to, userId = null, status = null }) {
   if (status) { where.push('t.status = ?'); args.push(status); }
   return db.prepare(`SELECT t.*, u.name AS user_name, (SELECT COUNT(*) FROM ticket_replies r WHERE r.ticket_id = t.id) AS replies
                      FROM tickets t JOIN users u ON u.id = t.user_id WHERE ${where.join(' AND ')} ORDER BY t.created_at DESC`).all(...args);
+}
+
+export function requestRows(db, from, to) {
+  return db.prepare(`SELECT q.*, u.name AS user_name FROM requests q JOIN users u ON u.id = q.user_id
+                     WHERE q.date BETWEEN ? AND ? ORDER BY q.created_at DESC`).all(from, to);
 }
 
 export function deductionRows(db, from, to, userId = null) {
@@ -99,7 +118,9 @@ export function dailyReport(db, date, now = Date.now()) {
     punches,
     ops: opsRows(db, date, date)[0] || null,
     channels: settings.channels,
+    metrics: settings.metrics,
     stock: stockRows(db, date, date),
+    requests: requestRows(db, date, date),
     tickets: ticketRows(db, { from: date, to: date }),
     deductions: deductionRows(db, date, date),
     debts: db.prepare('SELECT d.*, u.name AS user_name FROM debts d JOIN users u ON u.id = d.user_id WHERE d.date = ?').all(date),
@@ -145,19 +166,29 @@ export function punchesSection(punches) {
   };
 }
 
-export function opsSection(rows, channels) {
+export function opsSection(rows, channels, metrics = []) {
   return {
     title: 'العمليات اليومية',
-    head: ['التاريخ', ...channels.flatMap((c) => [`طلبات ${c.name}`, `مبلغ ${c.name}`]), 'إجمالي الطلبات', 'إجمالي المبالغ', 'الشحنات', 'المرتجعات', 'ملاحظات'],
-    rows: rows.map((r) => [r.date, ...channels.flatMap((c) => [r.channels[c.key]?.count || 0, r.channels[c.key]?.amount || 0]), r.totalOrders, r.totalAmount, r.shipments, r.returns, r.notes]),
+    head: ['التاريخ', ...channels.flatMap((c) => [`طلبات ${c.name}`, `مبلغ ${c.name}`]), 'إجمالي الطلبات', 'إجمالي المبالغ',
+      ...metrics.flatMap((m) => (m.note ? [m.name, `ملاحظات: ${m.name}`] : [m.name])), 'ملاحظات اليوم'],
+    rows: rows.map((r) => [r.date, ...channels.flatMap((c) => [r.channels[c.key]?.count || 0, r.channels[c.key]?.amount || 0]), r.totalOrders, r.totalAmount,
+      ...metrics.flatMap((m) => (m.note ? [r.metrics[m.key]?.value ?? '', r.metrics[m.key]?.note || ''] : [r.metrics[m.key]?.value ?? ''])), r.notes]),
   };
 }
 
 export function stockSection(rows) {
   return {
-    title: 'مرتجعات التجار والبضائع الجديدة',
-    head: ['التاريخ', 'النوع', 'التاجر / المورد', 'الوصف', 'الكمية', 'القيمة', 'ملاحظة', 'سجّلها'],
-    rows: rows.map((r) => [r.date, STOCK_KINDS[r.kind], r.party, r.description, r.quantity, r.value, r.note, r.created_by_name || '']),
+    title: 'فواتير البضائع ومرتجعات التجار',
+    head: ['التاريخ', 'النوع', 'التاجر', 'رقم الفاتورة', 'كود المنتج', 'الوصف', 'العدد', 'القيمة', 'ملاحظة', 'سجّلها'],
+    rows: rows.map((r) => [r.date, STOCK_KINDS[r.kind], r.party, r.invoice_no, r.sku, r.description, r.quantity, r.value, r.note, r.created_by_name || '']),
+  };
+}
+
+export function requestsSection(rows) {
+  return {
+    title: 'طلبات الفسح والنواقص',
+    head: ['رقم', 'التاريخ', 'الموظف', 'النوع', 'كود المنتج', 'العدد', 'السبب', 'الحالة', 'رد المدير'],
+    rows: rows.map((r) => [r.id, r.date, r.user_name, REQUEST_KINDS[r.kind], r.sku, r.quantity, r.reason, REQUEST_STATUS[r.status], r.response]),
   };
 }
 
