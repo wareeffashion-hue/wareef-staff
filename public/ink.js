@@ -1,7 +1,7 @@
 // "Light ink": three stacked layers behind the app.
-//  1. A GPU shader paints a slow, domain-warped aurora (violet, teal, magenta, amber) over ink black,
+//  1. A GPU shader paints a slow, domain-warped pastel aurora (lavender, mint, blush, peach) over white paper,
 //     with faint contour lines like a topographic map of the colour field.
-//  2. Iridescent calligraphic ribbons, after the Wareef box line-art, twist and fold in additive light.
+//  2. Iridescent calligraphic ribbons, after the Wareef box line-art, twist and fold like foil.
 //  3. Ink motes drift along a flow field and lean away from the pointer.
 // Everything renders once and stops for viewers who prefer reduced motion.
 
@@ -19,16 +19,16 @@ void main(){
   vec2 q=vec2(fbm(p*1.5+tt),fbm(p*1.5+vec2(5.2,1.3)-tt));
   vec2 w=vec2(fbm(p*1.5+3.*q+vec2(1.7,9.2)+tt*1.4),fbm(p*1.5+3.*q+vec2(8.3,2.8)-tt));
   float f=fbm(p*1.3+3.*w);
-  vec3 c=vec3(.018,.014,.04);
-  c=mix(c,vec3(.20,.08,.46),smoothstep(.25,.85,f));
-  c=mix(c,vec3(.02,.62,.60),smoothstep(.5,.98,w.x)*.8);
-  c=mix(c,vec3(.86,.20,.56),smoothstep(.58,1.,q.y)*.6);
-  c=mix(c,vec3(1.,.66,.30),pow(smoothstep(.55,1.,f*w.y*1.7),2.)*.7);
+  vec3 c=vec3(.985,.98,.975);
+  c=mix(c,vec3(.86,.82,1.),smoothstep(.35,.9,f)*.75);
+  c=mix(c,vec3(.80,.97,.93),smoothstep(.55,1.,w.x)*.7);
+  c=mix(c,vec3(1.,.86,.93),smoothstep(.6,1.,q.y)*.6);
+  c=mix(c,vec3(1.,.92,.80),pow(smoothstep(.55,1.,f*w.y*1.7),2.)*.7);
   float line=abs(fract(f*10.-t*.02)-.5);
-  c+=vec3(.85,.9,1.)*smoothstep(.035,0.,line)*.06;
-  float v=smoothstep(1.3,.2,length((uv-vec2(.62,.6))*vec2(1.25,1.)));
-  c*=mix(.28,1.,v);
-  gl_FragColor=vec4(c*.62,1.);
+  c=mix(c,vec3(.42,.36,.62),smoothstep(.03,0.,line)*.10);
+  float v=smoothstep(1.35,.15,length((uv-vec2(.62,.6))*vec2(1.25,1.)));
+  c=mix(vec3(.985,.98,.975),c,mix(.35,1.,v));
+  gl_FragColor=vec4(c,1.);
 }`;
 
 const RIBBONS = [
@@ -85,11 +85,11 @@ export function startInk() {
       gl.drawArrays(gl.TRIANGLES, 0, 3);
     }
     ctx.clearRect(0, 0, W, H);
-    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalCompositeOperation = 'source-over';
     const steps = W < 600 ? 50 : 90;
     for (const rb of RIBBONS) {
       const grad = ctx.createLinearGradient(0, 0, W, 0);
-      for (let s = 0; s <= 4; s++) grad.addColorStop(s / 4, `hsl(${(rb.hue + s * 55 + t * 12) % 360} 90% 72%)`);
+      for (let s = 0; s <= 4; s++) grad.addColorStop(s / 4, `hsl(${(rb.hue + s * 55 + t * 12) % 360} 75% 55%)`);
       ctx.strokeStyle = grad;
       for (let i = 0; i < rb.lines; i++) {
         const k = i / (rb.lines - 1) - 0.5;
@@ -119,8 +119,8 @@ export function startInk() {
       if (d2 < 14400) { const f = (1 - d2 / 14400) * 2.2 * dt; const d = Math.sqrt(d2) || 1; p.x += (dx / d) * f; p.y += (dy / d) * f; }
       if (p.x < -10) p.x = W + 10; else if (p.x > W + 10) p.x = -10;
       if (p.y < -10) p.y = H + 10; else if (p.y > H + 10) p.y = -10;
-      ctx.globalAlpha = 0.25 + p.z * 0.45;
-      ctx.fillStyle = `hsl(${(p.h + t * 8) % 360} 90% 78%)`;
+      ctx.globalAlpha = 0.18 + p.z * 0.35;
+      ctx.fillStyle = `hsl(${(p.h + t * 8) % 360} 70% 58%)`;
       ctx.beginPath();
       ctx.arc(p.x, p.y, 0.6 + p.z * 1.1, 0, Math.PI * 2);
       ctx.fill();

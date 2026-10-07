@@ -481,18 +481,18 @@ function dial(att, date, isToday) {
   return `<figure class="dial" style="margin:0" aria-label="دوام الفريق على مدار اليوم">
     <svg viewBox="-20 -20 500 500" role="img">
       <defs>
-        <linearGradient id="foilStroke" gradientUnits="userSpaceOnUse" x1="20" y1="420" x2="440" y2="60"><stop offset="0" stop-color="#6ff0d6"/><stop offset=".3" stop-color="#8fb8ff"/><stop offset=".55" stop-color="#b28dff"/><stop offset=".8" stop-color="#ff8fc7"/><stop offset="1" stop-color="#ffc98a"/></linearGradient>
-        <linearGradient id="foilText" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset=".5" stop-color="#cbb8ff"/><stop offset="1" stop-color="#7ef0dc"/></linearGradient>
+        <linearGradient id="foilStroke" gradientUnits="userSpaceOnUse" x1="20" y1="420" x2="440" y2="60"><stop offset="0" stop-color="#12b39d"/><stop offset=".3" stop-color="#4f86f7"/><stop offset=".55" stop-color="#7b55f0"/><stop offset=".8" stop-color="#e2569c"/><stop offset="1" stop-color="#ee9a37"/></linearGradient>
+        <linearGradient id="foilText" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#17131f"/><stop offset=".55" stop-color="#5b3fd1"/><stop offset="1" stop-color="#0e8f80"/></linearGradient>
         <filter id="glow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="2.2" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
-        <radialGradient id="core"><stop offset="0" stop-color="rgb(178 141 255 / 26%)"/><stop offset=".6" stop-color="rgb(111 240 214 / 6%)"/><stop offset="1" stop-color="rgb(111 240 214 / 0%)"/></radialGradient>
+        <radialGradient id="core"><stop offset="0" stop-color="rgb(171 134 255 / 22%)"/><stop offset=".6" stop-color="rgb(95 227 203 / 8%)"/><stop offset="1" stop-color="rgb(95 227 203 / 0%)"/></radialGradient>
       </defs>
       <circle cx="${C}" cy="${C}" r="${inner - 14}" fill="url(#core)"/>
       <circle class="orbit" cx="${C}" cy="${C}" r="${outer + 52}"/><circle class="orbit b" cx="${C}" cy="${C}" r="${inner - 26}"/>
       ${ticks}${rings}${hand}
-      <g class="center"><text class="n" x="${C}" y="${C + 14}">${present}<tspan font-size="24" fill="#8d8781">/${att.length}</tspan></text>
+      <g class="center"><text class="n" x="${C}" y="${C + 14}">${present}<tspan font-size="24" fill="#7d7690">/${att.length}</tspan></text>
       <text class="t" x="${C}" y="${C + 38}">${isToday ? 'داخل الدوام' : 'حضروا'}</text></g>
     </svg>
-    <figcaption class="legend"><span><i style="background:var(--foil)"></i>حضور</span><span><i style="background:var(--warn)"></i>تأخير</span><span><i style="background:repeating-linear-gradient(90deg,var(--bad) 0 3px,transparent 3px 6px)"></i>خروج مؤقت</span><span><i style="background:rgb(255 255 255 / 12%)"></i>وقت الدوام</span></figcaption>
+    <figcaption class="legend"><span><i style="background:var(--foil)"></i>حضور</span><span><i style="background:var(--warn)"></i>تأخير</span><span><i style="background:repeating-linear-gradient(90deg,var(--bad) 0 3px,transparent 3px 6px)"></i>خروج مؤقت</span><span><i style="background:rgb(28 22 52 / 12%)"></i>وقت الدوام</span></figcaption>
   </figure>`;
 }
 
