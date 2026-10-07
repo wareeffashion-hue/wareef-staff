@@ -300,3 +300,39 @@ test('daily report as PDF, and its WhatsApp caption', async () => {
   assert.equal(pdf.status, 200);
   assert.ok(pdf.body.startsWith('%PDF'));
 });
+
+test('barcode: shipments and returns are counted from scans, once per code', async () => {
+  const ab = client();
+  await admin('PUT', `/api/users/${id('abdullah')}`, { password: 'abdullah-pass1' });
+  assert.equal((await ab('POST', '/api/login', { username: 'abdullah', password: 'abdullah-pass1' })).status, 200);
+  assert.ok((await ab('GET', '/api/me')).body.user.perms.includes('scan'), 'Abdullah can scan by default');
+  assert.equal((await ali('POST', '/api/scans', { kind: 'shipment', code: 'X1' })).status, 403);
+  const a = await ab('POST', '/api/scans', { kind: 'shipment', code: ' SMSA-1001 ' });
+  assert.equal(a.status, 200);
+  assert.equal(a.body.count, 1);
+  assert.equal((await ab('POST', '/api/scans', { kind: 'shipment', code: 'SMSA-1002' })).body.count, 2);
+  const dup = await ab('POST', '/api/scans', { kind: 'shipment', code: 'SMSA-1001' });
+  assert.equal(dup.status, 409);
+  assert.match(dup.body.error, /مسجّل مسبقاً/);
+  assert.match(notes("kind = 'scan_dup'").at(-1).body, /مسح مكرر/);
+  const metric = () => db.prepare("SELECT value FROM daily_metrics WHERE date = ? AND key = ?").get(localDate(), 'shipments')?.value;
+  assert.equal(metric(), 2, 'the daily number follows the scans');
+  // the manual number is locked on days with scans
+  const manual = await ab('PUT', `/api/ops/${localDate()}`, { metrics: { shipments: { value: 99 } } });
+  assert.equal(manual.status, 400);
+  assert.equal(metric(), 2);
+  // a customer return of something we shipped says so
+  const ret = await ab('POST', '/api/scans', { kind: 'return', code: 'SMSA-1001' });
+  assert.equal(ret.status, 200);
+  assert.match(ret.body.note, /شُحن يوم/);
+  assert.equal(db.prepare("SELECT value FROM daily_metrics WHERE date = ? AND key = 'returns_warehouse'").get(localDate()).value, 1);
+  // undo
+  assert.equal((await ab('DELETE', `/api/scans/${a.body.id}`)).body.count, 1);
+  assert.equal(metric(), 1);
+  const list = await ab('GET', '/api/scans?kind=shipment');
+  assert.deepEqual(list.body.scans.map((s) => s.code), ['SMSA-1002']);
+  // reports carry the scans
+  const daily = await admin('GET', `/report/daily?date=${localDate()}`);
+  assert.match(daily.body, /المسح بالباركود/);
+  assert.match(daily.body, /SMSA-1002/);
+});

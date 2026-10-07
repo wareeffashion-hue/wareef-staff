@@ -124,6 +124,7 @@ export function dailyReport(db, date, now = Date.now()) {
     tickets: ticketRows(db, { from: date, to: date }),
     deductions: deductionRows(db, date, date),
     debts: db.prepare('SELECT d.*, u.name AS user_name FROM debts d JOIN users u ON u.id = d.user_id WHERE d.date = ?').all(date),
+    scans: db.prepare('SELECT s.*, u.name AS user_name FROM scans s LEFT JOIN users u ON u.id = s.user_id WHERE s.date = ? ORDER BY s.ts').all(date),
   };
 }
 
@@ -214,6 +215,14 @@ export function debtsSection(rows) {
     title: 'السلف والمديونيات',
     head: ['التاريخ', 'الموظف', 'النوع', 'المبلغ', 'من الراتب', 'ملاحظة'],
     rows: rows.map((r) => [r.date, r.user_name, r.kind === 'loan' ? 'سلفة' : 'سداد', r.amount, r.kind === 'repayment' ? (r.from_salary ? 'نعم' : 'نقداً') : '', r.note]),
+  };
+}
+
+export function scansSection(rows) {
+  return {
+    title: 'المسح بالباركود',
+    head: ['التاريخ', 'الوقت', 'النوع', 'الكود', 'بواسطة'],
+    rows: rows.map((r) => [r.date, t(r.ts), r.kind === 'shipment' ? 'شحنة طالعة' : 'مرتجع من عميل', r.code, r.user_name || '']),
   };
 }
 

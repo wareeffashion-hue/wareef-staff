@@ -353,3 +353,17 @@ body::after { content: ""; position: fixed; inset: 0; z-index: 0; pointer-events
 .exitcard .cd { font-size: 2.4rem; font-variant-numeric: tabular-nums; line-height: 1.2; color: var(--info); }
 .exitcard.over { background: var(--bad-bg); } .exitcard.over .cd { color: var(--bad); }
 .exitcard .btn { margin-top: 6px; }
+
+/* ---------- barcode */
+.scanseg { width: 100%; }
+.scanseg button { flex: 1; padding: 10px 12px; font-weight: 500; }
+.scanbox { text-align: center; display: grid; gap: 12px; justify-items: center; transition: box-shadow .2s; }
+.scount b { display: block; font-size: 4rem; line-height: 1.05; font-variant-numeric: tabular-nums; }
+.scount span { color: var(--muted); }
+.scaninput { width: min(520px, 100%); font-size: 1.35rem; text-align: center; padding: 14px 16px; border-radius: 14px; border: 2px dashed var(--line-2); background: #fff; letter-spacing: 1px; }
+.scaninput:focus { outline: none; border-style: solid; border-color: var(--violet); box-shadow: 0 0 0 4px rgb(123 85 240 / 12%); }
+.sresult { min-height: 1.6em; font-weight: 500; color: var(--muted); word-break: break-all; }
+.sresult.good { color: var(--good); } .sresult.bad { color: var(--bad); }
+.scanbox.ok { animation: scanok .6s ease-out; } .scanbox.bad { animation: scanbad .5s ease-out; }
+@keyframes scanok { from { box-shadow: 0 0 0 6px rgb(18 138 92 / 45%); } to { box-shadow: var(--shadow); } }
+@keyframes scanbad { 0%, 100% { transform: none; } 20% { transform: translateX(-8px); box-shadow: 0 0 0 6px rgb(199 51 79 / 45%); } 40% { transform: translateX(8px); } 60% { transform: translateX(-5px); } 80% { transform: translateX(4px); } }

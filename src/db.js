@@ -278,6 +278,20 @@ const MIGRATIONS = [
   ALTER TABLE leave_requests ADD COLUMN left_at INTEGER;
   ALTER TABLE leave_requests ADD COLUMN back_at INTEGER;
   `,
+  // v6: barcode scans: outgoing shipments and customer returns, one row per scanned code.
+  `
+  CREATE TABLE scans (
+    id INTEGER PRIMARY KEY,
+    kind TEXT NOT NULL CHECK (kind IN ('shipment', 'return')),
+    code TEXT NOT NULL,
+    date TEXT NOT NULL,
+    ts INTEGER NOT NULL,
+    user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    UNIQUE (kind, code)
+  );
+  CREATE INDEX scans_day ON scans(date, kind);
+  UPDATE users SET perms = json_insert(perms, '$[#]', 'scan') WHERE username = 'abdullah' AND perms NOT LIKE '%"scan"%';
+  `,
 ];
 
 export function openDb(path) {

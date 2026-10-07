@@ -315,3 +315,9 @@ export const mgrBack = ({ name, time, minutes, used, over }) => card({ manager: 
   icon: over ? '🟠' : '↩️', title: `رجع للمكتب: ${name}`,
   fields: [['الوقت', time], ...(minutes ? [['الإذن', `${minutes} دقيقة`], ['المدة الفعلية', `${used} دقيقة`]] : []), ...(over ? [['تجاوز الإذن', `${over} دقيقة`]] : [])],
 });
+
+// ------------------------------------------------------------------ barcode
+export const mgrScanDup = ({ name, reason }) => card({ manager: true,
+  icon: '🔁', title: 'مسح مكرر بالباركود',
+  fields: [['الموظف', name]], quote: reason,
+});

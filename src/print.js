@@ -62,6 +62,12 @@ ${table(['البند', 'العدد', 'ملاحظات', 'سجّلها'], d.metric
     return [esc(m.name), `<b>${n(v.value)}</b>`, esc(v.note), esc(v.by)];
   }), 'لم تُسجَّل أرقام لهذا اليوم')}
 
+<h2>المسح بالباركود</h2>
+${d.scans.length ? ['shipment', 'return'].map((k) => {
+    const list = d.scans.filter((s) => s.kind === k);
+    return `<p class="note"><b>${k === 'shipment' ? 'شحنات طالعة' : 'مرتجعات من العملاء'}: ${list.length}</b>${list.length ? ` · <span dir="ltr">${list.map((s) => esc(s.code)).join('  ·  ')}</span>` : ''}</p>`;
+  }).join('') : '<p class="empty">لم يُمسح شيء بالباركود لهذا اليوم</p>'}
+
 <h2>فواتير البضائع ومرتجعات التجار</h2>
 ${table(['النوع', 'التاجر', 'رقم الفاتورة', 'كود المنتج', 'العدد', 'القيمة', 'ملاحظة'],
     d.stock.map((s) => [STOCK_KINDS[s.kind], esc(s.party), esc(s.invoice_no), esc(s.sku || s.description), n(s.quantity), n(s.value), esc(s.note)]))}

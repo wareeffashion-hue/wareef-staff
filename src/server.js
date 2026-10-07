@@ -16,7 +16,7 @@ import { localDate, isDate, addDays, monthBounds, localTime, at } from './time.j
 import { computeDay, loadAttendance, periodsFor, summarize } from './attendance.js';
 import { FLAG_LABELS, NEXT, lastPunch, managerPunch, recordPunch, voidPunch } from './punch.js';
 import {
-  attendanceSection, dailyReport, debtBalances, debtRows, debtsSection, deductionRows, deductionsSection,
+  attendanceSection, dailyReport, scansSection, debtBalances, debtRows, debtsSection, deductionRows, deductionsSection,
   opsRows, opsSection, payroll, payrollSection, punchesSection, requestRows, requestsSection, stockRows, stockSection, ticketRows, ticketsSection, toCsv,
 } from './reports.js';
 import { renderDailyReport } from './print.js';
@@ -27,6 +27,7 @@ import { announceAward, assertOpen, awardOf, closeMonth, closedMonth, monthlyDat
 import { performance } from './performance.js';
 import { handleIncoming } from './commands.js';
 import { currentExit, endExit, exitTick, requestExit, startExit } from './exits.js';
+import { SCAN_KINDS, SCAN_METRIC, addScan, removeScan, scanCounts, scanList } from './scans.js';
 import { renderMonthlyReport, renderPayslip } from './print.js';
 import * as msg from './messages.js';
 import { DEDUCTION_LABELS, TICKET_KINDS, PUNCH_LABELS } from './reports.js';
@@ -40,7 +41,7 @@ const SECURITY_HEADERS = {
   'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
   'X-Frame-Options': 'DENY',
   'Referrer-Policy': 'same-origin',
-  'Permissions-Policy': 'camera=(), microphone=(), geolocation=(self)',
+  'Permissions-Policy': 'camera=(self), microphone=(), geolocation=(self)',
 };
 
 const num = (v, lo = 0, hi = 1e9) => {
@@ -280,7 +281,7 @@ export function createApp(db) {
     requireOps(user);
     const { from, to } = range(url, 31);
     const s = getSettings(db);
-    return { ops: opsRows(db, from, to), stock: stockRows(db, from, to), channels: s.channels, metrics: s.metrics };
+    return { ops: opsRows(db, from, to), stock: stockRows(db, from, to), channels: s.channels, metrics: s.metrics, scans: scanCounts(db, from, to) };
   }, { auth: true });
   r.put('/api/ops/:date', async ({ req, params, user }) => {
     requireOps(user);
@@ -317,6 +318,10 @@ export function createApp(db) {
         const m = metrics.find((x) => x.key === key);
         if (!m) throw new HttpError(400, 'رقم يومي غير معروف');
         requirePerm(user, `m:${key}`);
+        const scanKind = Object.keys(SCAN_METRIC).find((k) => SCAN_METRIC[k] === key);
+        if (scanKind && db.prepare('SELECT 1 FROM scans WHERE date = ? AND kind = ?').get(date, scanKind)) {
+          throw new HttpError(400, `«${m.name}» لهذا اليوم يُحسب من الباركود ولا يُعدَّل يدوياً`);
+        }
         const prev = db.prepare('SELECT value FROM daily_metrics WHERE date = ? AND key = ?').get(date, key);
         db.prepare(`INSERT INTO daily_metrics (date, key, value, note, updated_by, updated_at) VALUES (?, ?, ?, ?, ?, ?)
                     ON CONFLICT(date, key) DO UPDATE SET value = excluded.value, note = excluded.note,
@@ -375,6 +380,29 @@ export function createApp(db) {
       notifyActivity(db, 'stock_status', msg.mgrReturnStatus({ name: user.name, party: row.party, sku: ids.length > 1 ? `${ids.length} أصناف` : row.sku, qty, status, note }));
     }
     return { ok: true, ids };
+  }, { auth: true });
+
+  // ------------------------------------------------------------ barcode scans
+  const scanAccess = (user) => { if (!can(user, 'scan') && !isManager(user)) throw new HttpError(403, 'ليست لديك صلاحية المسح بالباركود'); };
+  r.get('/api/scans', ({ url, user }) => {
+    scanAccess(user);
+    const date = needDate(url.searchParams.get('date'), localDate());
+    const kind = SCAN_KINDS[url.searchParams.get('kind')] ? url.searchParams.get('kind') : null;
+    const counts = scanCounts(db, date, date)[date] || {};
+    return { date, scans: scanList(db, date, kind), counts: { shipment: counts.shipment || 0, return: counts.return || 0 }, kinds: SCAN_KINDS };
+  }, { auth: true });
+  r.post('/api/scans', async ({ req, user }) => {
+    scanAccess(user);
+    try {
+      return addScan(db, user, parseJson(await readBody(req)));
+    } catch (e) {
+      if (e.dup) notifyActivity(db, 'scan_dup', msg.mgrScanDup({ name: user.name, reason: e.message }));
+      throw e;
+    }
+  }, { auth: true });
+  r.delete('/api/scans/:id', ({ params, user }) => {
+    scanAccess(user);
+    return removeScan(db, user, params.id, isManager(user));
   }, { auth: true });
 
   // ------------------------------------------------------------ release / shortage requests
@@ -815,7 +843,7 @@ export function createApp(db) {
     const money = user.role === 'admin';
     csv(res, `wareef-daily-${date}`, [
       attendanceSection(d.attendance, undefined, money), punchesSection(d.punches),
-      opsSection(d.ops ? [d.ops] : [], d.channels, d.metrics), stockSection(d.stock), requestsSection(d.requests),
+      opsSection(d.ops ? [d.ops] : [], d.channels, d.metrics), scansSection(d.scans), stockSection(d.stock), requestsSection(d.requests),
       ticketsSection(d.tickets), ...(money ? [deductionsSection(d.deductions), debtsSection(d.debts)] : []),
     ]);
   });
@@ -832,7 +860,9 @@ export function createApp(db) {
   exp('/api/export/ops', (url, res) => {
     const { from, to } = range(url, 31);
     const st = getSettings(db);
-    csv(res, `wareef-operations-${from}_${to}`, [opsSection(opsRows(db, from, to), st.channels, st.metrics), stockSection(stockRows(db, from, to)), requestsSection(requestRows(db, from, to))]);
+    csv(res, `wareef-operations-${from}_${to}`, [opsSection(opsRows(db, from, to), st.channels, st.metrics),
+      scansSection(db.prepare('SELECT s.*, u.name AS user_name FROM scans s LEFT JOIN users u ON u.id = s.user_id WHERE s.date BETWEEN ? AND ? ORDER BY s.ts').all(from, to)),
+      stockSection(stockRows(db, from, to)), requestsSection(requestRows(db, from, to))]);
   });
   exp('/api/export/tickets', (url, res) => {
     const { from, to } = range(url, 31);

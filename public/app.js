@@ -124,6 +124,7 @@ const ICONS = {
   swap: '<path d="M7 4 3 8l4 4M3 8h13a4 4 0 0 1 4 4M17 20l4-4-4-4M21 16H8a4 4 0 0 1-4-4"/>',
   chart: '<path d="M4 4v16h16"/><path d="M7 15l4-5 3 3 5-7"/>',
   trophy: '<path d="M8 4h8v5a4 4 0 0 1-8 0z"/><path d="M8 6H5a3 3 0 0 0 3 4M16 6h3a3 3 0 0 1-3 4M12 13v4M8 21h8M9 17h6"/>',
+  barcode: '<path d="M4 5v14M7 5v14M11 5v14M14 5v14M17 5v14M20 5v14"/><path d="M2 3h3M19 3h3M2 21h3M19 21h3"/>',
   sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
 };
 const icon = (n) => `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true">${ICONS[n]}</svg>`;
@@ -193,7 +194,7 @@ function navItems() {
   if (ME.role === 'admin') {
     return [
       ['dashboard', 'لوحة اليوم', 'home'], ['attendance', 'الحضور والانصراف', 'clock'], ['leaves', 'الإجازات والاستئذان', 'sun'], ['payroll', 'الرواتب', 'wallet'],
-      ['money', 'الخصومات والسلف', 'coins'], ['ops', 'العمليات اليومية', 'box'], ['requests', 'الفسح والنواقص', 'swap'], ['tickets', 'التذاكر', 'ticket'],
+      ['money', 'الخصومات والسلف', 'coins'], ['ops', 'العمليات اليومية', 'box'], ['scan', 'الباركود', 'barcode'], ['requests', 'الفسح والنواقص', 'swap'], ['tickets', 'التذاكر', 'ticket'],
       ['performance', 'الأداء', 'trophy'], ['analytics', 'المؤشرات', 'chart'],
       ['flags', 'مؤشرات التلاعب', 'shield'], ['staff', 'الموظفون', 'users'], ['reports', 'التقارير والتصدير', 'file'], ['settings', 'الإعدادات', 'gear'],
     ];
@@ -203,12 +204,12 @@ function navItems() {
     // Supervisor: an employee who punches, plus the team pages without salaries or settings.
     return [
       ['today', 'البصمة', 'clock'], ['dashboard', 'لوحة اليوم', 'home'], ['attendance', 'الحضور والانصراف', 'cal'], ['leaves', 'الإجازات والاستئذان', 'sun'],
-      ...ops, ['requests', 'الفسح والنواقص', 'swap'], ['tickets', 'التذاكر', 'ticket'], ['performance', 'الأداء', 'trophy'], ['analytics', 'المؤشرات', 'chart'],
+      ...ops, ['scan', 'الباركود', 'barcode'], ['requests', 'الفسح والنواقص', 'swap'], ['tickets', 'التذاكر', 'ticket'], ['performance', 'الأداء', 'trophy'], ['analytics', 'المؤشرات', 'chart'],
       ['flags', 'مؤشرات التلاعب', 'shield'], ['reports', 'التقارير', 'file'], ['mine', 'سجلي', 'wallet'], ['account', 'حسابي', 'user'],
     ];
   }
   return [
-    ['today', 'البصمة', 'clock'], ['mine', 'سجلي', 'cal'], ['leaves', 'إجازاتي', 'sun'], ['tickets', 'تذاكري', 'ticket'],
+    ['today', 'البصمة', 'clock'], ...(ME.perms.includes('scan') ? [['scan', 'الباركود', 'barcode']] : []), ['mine', 'سجلي', 'cal'], ['leaves', 'إجازاتي', 'sun'], ['tickets', 'تذاكري', 'ticket'],
     ...ops, ...(ME.perms.includes('requests') ? [['requests', 'الفسح والنواقص', 'swap']] : []), ['account', 'حسابي', 'user'],
   ];
 }
@@ -868,6 +869,8 @@ PAGES.ops = async () => {
   const isAdmin = ME.role === 'admin';
   const may = (p) => isAdmin || ME.perms.includes(p);
   const myMetrics = d.metrics.filter((m) => may(`m:${m.key}`));
+  const SCAN_OF = { shipments: 'shipment', returns_warehouse: 'return' };
+  const scanned = (key) => !!(SCAN_OF[key] && d.scans?.[date]?.[SCAN_OF[key]]);
   const tot = (k) => d.ops.reduce((t, o) => t + (o[k] || 0), 0);
   const mtot = (k) => d.ops.reduce((t, o) => t + (o.metrics[k]?.value || 0), 0);
   const tooOld = !isAdmin && date < addDays(today(), -3);
@@ -884,7 +887,7 @@ PAGES.ops = async () => {
   const metricsPanel = myMetrics.length ? `<section class="panel"><header><h2>${isAdmin ? 'الأرقام اليومية' : 'أرقامي اليومية'}</h2><span class="muted small">${fmtDate(date)}</span></header>
     <form class="form" id="mF">
       ${myMetrics.map((m) => `<div class="row">
-        <label class="f">${esc(m.name)}<input type="number" min="0" step="1" inputmode="numeric" name="v_${m.key}" id="m-${m.key}" value="${day.metrics[m.key]?.value ?? ''}" placeholder="0"></label>
+        <label class="f">${esc(m.name)}${scanned(m.key) ? ' <span class="pill good" style="font-size:.72rem">من الباركود</span>' : ''}<input type="number" min="0" step="1" inputmode="numeric" name="v_${m.key}" id="m-${m.key}" value="${day.metrics[m.key]?.value ?? ''}" placeholder="0" ${scanned(m.key) ? 'disabled' : ''}></label>
         ${m.note ? `<label class="f" style="flex:2 1 220px">ملاحظات ${esc(m.name)}<textarea name="n_${m.key}" id="mn-${m.key}" rows="2" placeholder="اكتب تفاصيل كل إشكالية...">${esc(day.metrics[m.key]?.note || '')}</textarea></label>` : ''}
         ${day.metrics[m.key]?.by && isAdmin ? `<span class="muted small" style="flex:0 0 auto">سجّلها ${esc(day.metrics[m.key].by)}</span>` : ''}
       </div>`).join('')}
@@ -941,7 +944,7 @@ PAGES.ops = async () => {
   if (mF) mF.onsubmit = async (e) => {
     e.preventDefault();
     const f = formData(e.target);
-    const metrics = Object.fromEntries(myMetrics.filter((m) => f[`v_${m.key}`] !== '' || f[`n_${m.key}`]).map((m) => [m.key, { value: f[`v_${m.key}`] || 0, note: f[`n_${m.key}`] || '' }]));
+    const metrics = Object.fromEntries(myMetrics.filter((m) => !scanned(m.key) && (f[`v_${m.key}`] !== '' || f[`n_${m.key}`])).map((m) => [m.key, { value: f[`v_${m.key}`] || 0, note: f[`n_${m.key}`] || '' }]));
     if (!Object.keys(metrics).length) return toast('اكتب رقماً واحداً على الأقل', true);
     if (await act($('button[type=submit]', e.target), () => api(`/api/ops/${date}`, { method: 'PUT', body: { metrics } }), 'تم حفظ الأرقام')) refresh();
   };
@@ -1586,6 +1589,95 @@ PAGES.analytics = async () => {
   $$('[data-span]', pg).forEach((b) => { b.onclick = () => { sessionStorage.setItem('an-span', b.dataset.span); refresh(); }; });
   const sel = $('#an-m', pg);
   if (sel) sel.onchange = () => { sessionStorage.setItem('an-metric', sel.value); refresh(); };
+};
+
+// ------------------------------------------------------------------ barcode scanning
+// A scanner (USB or Bluetooth) types the code and presses Enter; the field stays focused so the
+// employee just keeps scanning. On phones with a camera barcode reader, a camera mode is offered too.
+const SK = { shipment: ['شحنات طالعة', 'شحنة طالعة اليوم'], return: ['مرتجعات من العملاء', 'مرتجع من العملاء اليوم'] };
+let audioCtx = null;
+function beep(ok) {
+  try {
+    audioCtx ||= new (window.AudioContext || window.webkitAudioContext)();
+    const tones = ok ? [[1320, 0, .09]] : [[330, 0, .14], [262, .17, .2]];
+    for (const [f, at, d] of tones) {
+      const o = audioCtx.createOscillator(); const g = audioCtx.createGain();
+      o.frequency.value = f; o.type = ok ? 'sine' : 'square'; g.gain.value = ok ? .2 : .12;
+      o.connect(g); g.connect(audioCtx.destination); o.start(audioCtx.currentTime + at); o.stop(audioCtx.currentTime + at + d);
+    }
+  } catch {}
+  if (!ok && navigator.vibrate) navigator.vibrate([90, 60, 90]);
+}
+PAGES.scan = async () => {
+  let kind = sessionStorage.getItem('scan-kind') || 'shipment';
+  let d = await api(`/api/scans?kind=${kind}`);
+  const mgr = ME.manager;
+  const canUndo = (x) => mgr || (x.user_id === ME.id && nowMs() - x.ts < 10 * 60000);
+  const rowHtml = (x) => `<tr data-row="${x.id}"><td class="num">${fmtT(x.ts)}</td><td dir="ltr"><b>${esc(x.code)}</b></td><td>${esc(x.user_name || '')}</td>
+    <td>${canUndo(x) ? `<button class="link bad" data-undo="${x.id}" type="button" aria-label="إلغاء المسح" title="إلغاء المسح">✕</button>` : ''}</td></tr>`;
+  const pg = render(`
+    <div class="topline"><div><h1>المسح بالباركود</h1><p class="muted small">وجّه جهاز الباركود على البوليصة. كل كود ينحسب مرة وحدة، والعدد يدخل في أرقامك تلقائياً.</p></div></div>
+    <div class="seg scanseg" role="tablist">${Object.entries(SK).map(([k, v]) => `<button type="button" data-k="${k}" class="${k === kind ? 'on' : ''}">${v[0]}</button>`).join('')}</div>
+    <section class="panel scanbox ${kind}" id="box">
+      <div class="scount"><b id="cnt">${int(d.counts[kind])}</b><span>${SK[kind][1]}</span></div>
+      <form id="scanF" autocomplete="off"><input id="code" class="scaninput" placeholder="امسح الباركود هنا" inputmode="none" autocomplete="off" autocapitalize="none" spellcheck="false" dir="ltr" aria-label="الكود"></form>
+      <p class="sresult" id="res" role="status">جاهز للمسح</p>
+      <div class="row" style="justify-content:center">
+        <button class="btn ghost sm" type="button" id="kb">إدخال يدوي</button>
+        ${'BarcodeDetector' in window ? '<button class="btn ghost sm" type="button" id="cam">المسح بالكاميرا</button>' : ''}
+      </div>
+    </section>
+    <section class="panel"><header><h2>${SK[kind][0]} · اليوم</h2><span class="muted small">إلغاء المسح متاح خلال 10 دقائق</span></header>
+      <div class="tbl"><table><thead><tr><th>الوقت</th><th>الكود</th><th>بواسطة</th><th></th></tr></thead><tbody id="list">${d.scans.map(rowHtml).join('')}</tbody></table>
+      <p class="empty" id="empty" ${d.scans.length ? 'hidden' : ''}>لم يُمسح شيء بعد</p></div>
+    </section>`);
+  const input = $('#code', pg), box = $('#box', pg), res = $('#res', pg);
+  const focus = () => { if (!document.querySelector('dialog[open]') && document.activeElement !== input) input.focus({ preventScroll: true }); };
+  focus();
+  const keep = setInterval(() => { if (!input.isConnected) { clearInterval(keep); return; } focus(); }, 800);
+  input.addEventListener('blur', () => setTimeout(focus, 150));
+  $('#kb', pg).onclick = () => { input.inputMode = input.inputMode === 'none' ? 'text' : 'none'; input.blur(); setTimeout(() => input.focus(), 50); };
+  const flash = (ok, text) => {
+    box.classList.remove('ok', 'bad'); void box.offsetWidth; box.classList.add(ok ? 'ok' : 'bad');
+    res.textContent = text; res.className = `sresult ${ok ? 'good' : 'bad'}`; beep(ok);
+  };
+  let busy = false;
+  async function submit(code) {
+    code = code.trim(); if (!code || busy) return; busy = true;
+    try {
+      const r = await api('/api/scans', { method: 'POST', body: { kind, code } });
+      $('#cnt', pg).textContent = int(r.count);
+      $('#list', pg).insertAdjacentHTML('afterbegin', rowHtml({ ...r, user_id: ME.id, user_name: ME.name }));
+      $('#empty', pg).hidden = true;
+      flash(true, `✓ ${code}${r.note ? ` · ${r.note}` : ''}`);
+    } catch (e) { flash(false, `${code}: ${e.message}`); } finally { busy = false; }
+  }
+  $('#scanF', pg).onsubmit = (e) => { e.preventDefault(); const v = input.value; input.value = ''; submit(v); };
+  $$('[data-k]', pg).forEach((b) => { b.onclick = () => { sessionStorage.setItem('scan-kind', b.dataset.k); refresh(); }; });
+  $('#list', pg).addEventListener('click', async (e) => {
+    const b = e.target.closest('[data-undo]'); if (!b) return;
+    const r = await act(b, () => api(`/api/scans/${b.dataset.undo}`, { method: 'DELETE' }), 'تم إلغاء المسح');
+    if (r) { b.closest('tr').remove(); $('#cnt', pg).textContent = int(r.count); }
+  });
+  const cam = $('#cam', pg);
+  if (cam) cam.onclick = async () => {
+    let stream;
+    try { stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } }); } catch { toast('اسمح للمتصفح باستخدام الكاميرا', true); return; }
+    const det = new BarcodeDetector();
+    let last = '', lastAt = 0, live = true;
+    const dl = modal('المسح بالكاميرا', '<video id="vid" playsinline muted style="width:100%;border-radius:12px;background:#000"></video><p class="muted small" style="text-align:center">وجّه الكاميرا على الباركود</p>', () => {});
+    const v = $('#vid', dl); v.srcObject = stream; await v.play();
+    dl.addEventListener('close', () => { live = false; stream.getTracks().forEach((tr) => tr.stop()); focus(); });
+    const loop = async () => {
+      if (!live) return;
+      try {
+        const [hit] = await det.detect(v);
+        if (hit && (hit.rawValue !== last || Date.now() - lastAt > 2500)) { last = hit.rawValue; lastAt = Date.now(); submit(hit.rawValue); }
+      } catch {}
+      setTimeout(loop, 250);
+    };
+    loop();
+  };
 };
 
 startInk();
