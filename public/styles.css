@@ -346,3 +346,10 @@ body::after { content: ""; position: fixed; inset: 0; z-index: 0; pointer-events
 .hbars .bar { height: 12px; }
 .hbars b { text-align: end; font-variant-numeric: tabular-nums; }
 .acts { display: flex; gap: 6px; margin-top: 6px; }
+.exitcard { display: grid; gap: 4px; justify-items: center; text-align: center; margin: 14px auto 4px; padding: 14px 18px; border-radius: var(--r); background: var(--sunk); max-width: 420px; }
+.exitcard span { color: var(--muted); font-size: .9rem; }
+.exitcard.wait { background: var(--warn-bg); } .exitcard.ok { background: var(--good-bg); } .exitcard.no { background: var(--bad-bg); }
+.exitcard.out { background: var(--info-bg); }
+.exitcard .cd { font-size: 2.4rem; font-variant-numeric: tabular-nums; line-height: 1.2; color: var(--info); }
+.exitcard.over { background: var(--bad-bg); } .exitcard.over .cd { color: var(--bad); }
+.exitcard .btn { margin-top: 6px; }

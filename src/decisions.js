@@ -10,6 +10,7 @@ export function decideLeave(db, manager, id, status, response) {
   const q = db.prepare('SELECT * FROM leave_requests WHERE id = ?').get(id);
   if (!q) throw new HttpError(404, 'الطلب غير موجود');
   if (!['approved', 'rejected'].includes(status)) throw new HttpError(400, 'حالة غير معروفة');
+  if (q.minutes && q.left_at) throw new HttpError(400, 'الموظف خرج فعلاً بهذا الإذن');
   const resp = response !== undefined ? String(response || '').trim().slice(0, 500) : q.response;
   const marker = `طلب إجازة #${q.id}`;
   tx(db, () => {
@@ -25,7 +26,7 @@ export function decideLeave(db, manager, id, status, response) {
     audit(db, manager.id, 'leave.decide', q.user_id, { id: q.id, status });
   });
   const next = { ...q, status, response: resp };
-  if (status !== q.status) notifyEmployee(db, q.user_id, 'leave_status', msg.leaveDecision({ q: next, link: appLink(db) }));
+  if (status !== q.status) notifyEmployee(db, q.user_id, 'leave_status', q.minutes ? msg.exitDecision({ q: next, link: appLink(db) }) : msg.leaveDecision({ q: next, link: appLink(db) }));
   return { ok: true, leave: next };
 }
 

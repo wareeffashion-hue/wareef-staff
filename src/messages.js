@@ -166,7 +166,7 @@ export const test = ({ link }) => card({
 
 // ------------------------------------------------------------------ leave & permission requests
 export const LEAVE_KINDS = { leave: 'إجازة', sick: 'إجازة مرضية', permission: 'استئذان' };
-export const leaveWhen = (q) => (q.kind === 'permission'
+export const leaveWhen = (q) => (q.kind === 'permission' && q.minutes ? `خروج ${q.minutes} دقيقة يوم ${q.from_date}` : q.kind === 'permission'
   ? `${q.from_date} من ${q.from_time} إلى ${q.to_time}`
   : q.from_date === q.to_date ? q.from_date : `من ${q.from_date} إلى ${q.to_date}`);
 
@@ -282,4 +282,36 @@ export const award = ({ name, month, score, isYou, details }) => card({
     : [`نبارك لزميلنا *${name}* لقب موظف الشهر 🎉`, 'المنافسة مفتوحة للشهر الجاي، الالتزام والإنجاز هما الطريق.'],
   fields: [['التقييم', `${score} من 100`]],
   quote: details || undefined,
+});
+
+// ------------------------------------------------------------------ exit permission
+export const mgrExitRequest = ({ q, name, time }) => card({ manager: true,
+  icon: '🚪', title: `طلب إذن خروج: ${name}`,
+  fields: [['المدة', `${q.minutes} دقيقة`], ['وقت الطلب', time]],
+  quote: q.reason || undefined,
+  steps: [`للموافقة اكتب: *موافق ج${q.id}*`, `وللرفض: *رفض ج${q.id}* ثم السبب`, 'أو من «لوحة اليوم» في النظام'],
+});
+
+export const exitDecision = ({ q, link }) => card({
+  icon: q.status === 'approved' ? '✅' : '⛔', title: q.status === 'approved' ? 'تمت الموافقة على خروجك' : 'لم تتم الموافقة على الخروج',
+  fields: [['المدة', `${q.minutes} دقيقة`]],
+  quote: q.response || undefined,
+  steps: q.status === 'approved' ? ['اضغط «اخرج الآن» في النظام وقت ما تطلع', 'وأول ما توصل اضغط «رجعت للمكتب»', `الوقت يبدأ من لحظة خروجك (${q.minutes} دقيقة)`] : [],
+  link,
+});
+
+export const exitOver = ({ name, minutes, back, link }) => card({
+  icon: '⏳', title: 'انتهى وقت الخروج', hello: `${name}،`,
+  lines: [`إذن خروجك ${minutes} دقيقة انتهى الساعة *${back}*.`],
+  steps: ['أول ما توصل اضغط «رجعت للمكتب»', 'الوقت الزائد يُحسب خروجاً أثناء الدوام'], link,
+});
+
+export const mgrExitOver = ({ name, minutes, left, over }) => card({ manager: true,
+  icon: '⏳', title: `${name} تجاوز وقت الخروج`,
+  fields: [['خرج الساعة', left], ['الإذن', `${minutes} دقيقة`], ['متأخر عن الرجوع', `${over} دقيقة`]],
+});
+
+export const mgrBack = ({ name, time, minutes, used, over }) => card({ manager: true,
+  icon: over ? '🟠' : '↩️', title: `رجع للمكتب: ${name}`,
+  fields: [['الوقت', time], ...(minutes ? [['الإذن', `${minutes} دقيقة`], ['المدة الفعلية', `${used} دقيقة`]] : []), ...(over ? [['تجاوز الإذن', `${over} دقيقة`]] : [])],
 });

@@ -256,7 +256,7 @@ PAGES.today = async () => {
     const buttons = {
       in: '<button class="btn" data-p="in">تسجيل حضور</button>',
       leave: '<button class="btn ghost" data-p="leave">خروج مؤقت</button>',
-      back: '<button class="btn" data-p="back">عودة من الخروج</button>',
+      back: '<button class="btn" data-p="back">رجعت للمكتب</button>',
       out: '<button class="btn ghost" data-p="out">تسجيل انصراف</button>',
     };
     const pg = render(`
@@ -265,7 +265,9 @@ PAGES.today = async () => {
         <p class="muted">${fmtDate(data.date)}</p>
         <div class="state">${pill(live[0], live[1])} ${d.periods.length ? statusPill(d.status) : pill('لا يوجد دوام اليوم')}</div>
         ${d.periods.length ? `<div class="periods">${d.periods.map((p) => pill(`${p.name}: ${p.start} – ${p.end}`, 'plain')).join('')}</div>` : ''}
-        <div class="actions">${data.allowed.map((a) => buttons[a]).join('')}</div>
+        ${exitCard(data)}
+        <div class="actions">${data.allowed.filter((a) => !(a === 'leave' && data.exit?.status === 'approved' && !data.exit.left_at)).map((a) => buttons[a]).join('')}
+          ${data.allowed.includes('leave') && !(data.exit && (data.exit.status === 'pending' || (data.exit.status === 'approved' && !data.exit.back_at))) ? '<button class="btn ghost" data-x="ask">طلب إذن خروج</button>' : ''}</div>
         ${data.geo ? '<p class="muted small">يُسجَّل موقعك مع كل بصمة للتحقق من وجودك في مكان العمل.</p>' : ''}
       </section>
       <div class="kpis">
@@ -277,12 +279,44 @@ PAGES.today = async () => {
         ${data.punches.length ? `<div class="timeline">${data.punches.map((p) => `<div class="ev ${p.type}"><b class="num">${fmtT(p.ts)}</b><span class="dot"></span><div>${PUNCH[p.type]}${p.note ? ` <span class="muted small">· ${esc(p.note)}</span>` : ''}</div></div>`).join('')}</div>` : '<p class="muted">لم تسجّل أي بصمة اليوم.</p>'}
       </section>`);
     $$('[data-p]', pg).forEach((b) => { b.onclick = () => punch(b.dataset.p, b); });
+    const ask = $('[data-x=ask]', pg);
+    if (ask) ask.onclick = () => askExit();
+    const go = $('[data-x=go]', pg);
+    if (go) go.onclick = () => punch('leave', go, data.exit.id);
+    const cancel = $('[data-x=cancel]', pg);
+    if (cancel) cancel.onclick = async () => { const r = await act(cancel, () => api(`/api/exit-requests/${data.exit.id}`, { method: 'DELETE' }), 'تم إلغاء الطلب'); if (r) { data = r; draw(); } };
     tick();
   };
-  const tick = () => { const c = $('#clock'); if (c) c.textContent = localIso(nowMs()).slice(11, 19); };
-  async function punch(type, btn) {
+  const tick = () => {
+    const c = $('#clock'); if (c) c.textContent = localIso(nowMs()).slice(11, 19);
+    const cd = $('#exit-cd');
+    if (cd && data.exit?.left_at) {
+      const left = data.exit.left_at + data.exit.minutes * 60000 - nowMs();
+      const a = Math.abs(left);
+      cd.textContent = `${left < 0 ? '+' : ''}${Math.floor(a / 60000)}:${String(Math.floor((a % 60000) / 1000)).padStart(2, '0')}`;
+      cd.closest('.exitcard').classList.toggle('over', left < 0);
+    }
+  };
+  function askExit() {
+    modal('طلب إذن خروج', `<form class="form" id="xF">
+        <p class="muted small">يوصل الطلب للمدير على واتساب، ويوصلك قراره. الوقت يبدأ من لحظة خروجك.</p>
+        <div class="seg" role="radiogroup" aria-label="المدة">${[15, 30, 45, 60, 90].map((m, i) => `<button type="button" data-m="${m}" class="${i === 1 ? 'on' : ''}">${m} د</button>`).join('')}</div>
+        <label class="f">المدة بالدقائق<input type="number" name="minutes" id="x-min" min="5" max="240" step="5" value="30" inputmode="numeric" required></label>
+        <label class="f">السبب<textarea name="reason" id="x-reason" required maxlength="300" placeholder="مثال: مراجعة بنك، توصيل طلب عاجل، ظرف عائلي"></textarea></label>
+        <button class="btn" type="submit">أرسل الطلب للمدير</button></form>`, (dl) => {
+      $$('[data-m]', dl).forEach((b) => { b.onclick = () => { $('#x-min', dl).value = b.dataset.m; $$('[data-m]', dl).forEach((x) => x.classList.toggle('on', x === b)); }; });
+      $('#x-min', dl).oninput = () => $$('[data-m]', dl).forEach((x) => x.classList.toggle('on', x.dataset.m === $('#x-min', dl).value));
+      $('#xF', dl).onsubmit = async (e) => {
+        e.preventDefault();
+        const r = await act($('button[type=submit]', e.target), () => api('/api/exit-requests', { method: 'POST', body: formData(e.target) }), 'تم إرسال الطلب للمدير');
+        if (r) { dl.close(); data = r; draw(); }
+      };
+    });
+  }
+  async function punch(type, btn, exitId = null) {
     let note = '';
-    if (type === 'leave') {
+    if (type === 'leave' && !exitId) {
+      if (!confirm('الخروج بدون إذن مسبق يوصل للمدير ويُحسب من وقت الخروج. تقدر تطلب إذن خروج بدلاً منه. تكمل؟')) return;
       note = await new Promise((resolve) => {
         const d = modal('خروج مؤقت', `<form class="form" id="lv"><label class="f">سبب الخروج<textarea name="note" id="lv-note" required maxlength="300" placeholder="مثال: مراجعة بنك، توصيل طلب، ظرف عائلي"></textarea></label><button class="btn" type="submit">تسجيل الخروج المؤقت</button></form>`,
           (dl) => { $('#lv', dl).onsubmit = (e) => { e.preventDefault(); const v = $('#lv-note', dl).value.trim(); dl.close(); resolve(v); }; });
@@ -293,16 +327,30 @@ PAGES.today = async () => {
     btn.disabled = true;
     const pos = data.geo ? await locate() : null;
     if (data.requireGeo && !pos) { btn.disabled = false; toast('فعّل خدمة الموقع في جوالك واسمح للمتصفح باستخدامها', true); return; }
-    const r = await act(btn, () => api('/api/punch', { method: 'POST', body: { type, note, client_ts: Date.now(), ...(pos || {}) } }), `تم تسجيل ${PUNCH[type]} الساعة ${fmtT(nowMs())}`);
+    const r = await act(btn, () => api('/api/punch', { method: 'POST', body: { type, note, exit_id: exitId, client_ts: Date.now(), ...(pos || {}) } }), `تم تسجيل ${type === 'back' ? 'رجوعك' : PUNCH[type]} الساعة ${fmtT(nowMs())}`);
     if (r) { data = r; draw(); }
   }
   draw();
   window.__tick = setInterval(tick, 1000);
   const poll = setInterval(async () => {
     if (!$('#clock')) { clearInterval(poll); return; }
+    if (data.exit?.status !== 'pending' && Date.now() - lastPoll < 55000) return;
+    lastPoll = Date.now();
     try { data = await api('/api/my/today'); draw(); } catch {}
-  }, 60000);
+  }, 10000);
+  let lastPoll = Date.now();
 };
+
+/** Where the exit permission stands, on the punch screen. */
+function exitCard(data) {
+  const x = data.exit;
+  if (!x) return '';
+  if (x.status === 'pending') return `<div class="exitcard wait"><b>⏳ بانتظار موافقة المدير</b><span>خروج ${x.minutes} دقيقة · ${esc(x.reason)}</span><button class="link" data-x="cancel" type="button">إلغاء الطلب</button></div>`;
+  if (x.status === 'rejected') return `<div class="exitcard no"><b>⛔ لم تتم الموافقة على الخروج</b>${x.response ? `<span>${esc(x.response)}</span>` : ''}</div>`;
+  if (!x.left_at) return `<div class="exitcard ok"><b>✅ تمت الموافقة على خروجك ${x.minutes} دقيقة</b>${x.response ? `<span>${esc(x.response)}</span>` : ''}<span>الوقت يبدأ لما تضغط «اخرج الآن».</span><button class="btn" data-x="go" type="button">اخرج الآن</button></div>`;
+  if (!x.back_at) return `<div class="exitcard out"><span>متبقي من إذن الخروج</span><b class="cd" id="exit-cd">--:--</b><span>خرجت الساعة ${fmtT(x.left_at)} · ${x.minutes} دقيقة</span></div>`;
+  return `<div class="exitcard ok"><b>↩️ تم تسجيل رجوعك الساعة ${fmtT(x.back_at)}</b><span>استخدمت ${Math.round((x.back_at - x.left_at) / 60000)} من ${x.minutes} دقيقة</span></div>`;
+}
 
 function locate() {
   return new Promise((resolve) => {
@@ -419,6 +467,11 @@ PAGES.dashboard = async () => {
       <div class="${d.openTickets ? 'warn' : ''}"><b data-count="${d.openTickets}">0</b><span>تذاكر مفتوحة</span></div>
     </div>
 
+    ${d.exits.length ? `<section class="panel"><header><h2>أذونات الخروج</h2><span class="muted small">تقدر توافق من واتساب: موافق ج ورقم الطلب</span></header>
+      <div class="list">${d.exits.map((x) => `<div class="item exitrow"><div class="top"><b>${esc(x.user_name)} · ${x.minutes} دقيقة</b>${x.status === 'pending' ? pill('بانتظارك', 'warn') : x.left_at ? pill(`خارج منذ ${fmtT(x.left_at)}`, Date.now() > x.left_at + x.minutes * 60000 ? 'bad' : 'info') : pill('موافق، لم يخرج بعد', 'good')}</div>
+        <span class="muted small">#${x.id} · ${esc(x.reason)} · طلبه الساعة ${fmtT(x.created_at)}</span>
+        ${x.status === 'pending' ? `<div class="acts"><button class="btn sm" data-xa="${x.id}">موافقة</button><button class="btn sm ghost" data-xr="${x.id}">رفض</button></div>` : ''}</div>`).join('')}</div>
+    </section>` : ''}
     <section class="panel"><header><h2>الفريق</h2><span class="muted small">الشريط يمثّل اليوم من 6 صباحاً إلى 10 مساءً. اضغط على أي موظف لعرض بصماته وتعديلها</span></header>
       <div class="staff">${att.map((r) => {
         const live = LIVE[r.liveState] || LIVE.out;
@@ -456,6 +509,12 @@ PAGES.dashboard = async () => {
   $('#dd', pg).onchange = (e) => { sessionStorage.setItem('dash-date', e.target.value || today()); refresh(); };
   $$('[data-u]', pg).forEach((b) => { b.addEventListener('click', () => dayDetail(+b.dataset.u, b.dataset.n, date)); });
   $$('[data-t]', pg).forEach((b) => { b.onclick = () => ticketModal(+b.dataset.t); });
+  $$('[data-xa]', pg).forEach((b) => { b.onclick = async () => { if (await act(b, () => api(`/api/leaves/${b.dataset.xa}`, { method: 'PUT', body: { status: 'approved' } }), 'تمت الموافقة ووصل الموظف إشعار')) refresh(); }; });
+  $$('[data-xr]', pg).forEach((b) => { b.onclick = async () => {
+    const why = prompt('سبب الرفض (اختياري)') ;
+    if (why === null) return;
+    if (await act(b, () => api(`/api/leaves/${b.dataset.xr}`, { method: 'PUT', body: { status: 'rejected', response: why } }), 'تم الرفض ووصل الموظف إشعار')) refresh();
+  }; });
   countUp(pg);
   if (isToday) {
     const tick = () => { const el = $('#clock'); if (el) el.textContent = localIso(nowMs()).slice(11, 19); };
@@ -1358,7 +1417,7 @@ PAGES.settings = async () => {
 // ------------------------------------------------------------------ leave & permission requests
 const LK = { leave: 'إجازة', sick: 'إجازة مرضية', permission: 'استئذان بالساعات' };
 const LS = { pending: ['بانتظار المدير', 'warn'], approved: ['تمت الموافقة', 'good'], rejected: ['مرفوض', 'bad'] };
-const leaveWhen = (q) => (q.kind === 'permission' ? `${fmtDate(q.from_date)} · ${q.from_time} – ${q.to_time}`
+const leaveWhen = (q) => (q.minutes ? `${fmtDate(q.from_date)} · خروج ${q.minutes} دقيقة${q.left_at ? ` (${fmtT(q.left_at)}${q.back_at ? ` – ${fmtT(q.back_at)}` : ''})` : ''}` : q.kind === 'permission' ? `${fmtDate(q.from_date)} · ${q.from_time} – ${q.to_time}`
   : q.from_date === q.to_date ? fmtDate(q.from_date) : `${fmtDate(q.from_date)} ← ${fmtDate(q.to_date)}`);
 PAGES.leaves = async () => {
   const mgr = ME.manager;

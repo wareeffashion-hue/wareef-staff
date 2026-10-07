@@ -271,6 +271,13 @@ const MIGRATIONS = [
       '$[#]', json('{"key":"late_unavailable","name":"منها غير متوفرة","note":true}'))
     WHERE key = 'metrics' AND value NOT LIKE '%late_orders%';
   `,
+  // v5: exit permission requested on the spot for a number of minutes (kind 'permission', minutes > 0).
+  // The approved window starts when the employee actually steps out (left_at) and closes at their return (back_at).
+  `
+  ALTER TABLE leave_requests ADD COLUMN minutes INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE leave_requests ADD COLUMN left_at INTEGER;
+  ALTER TABLE leave_requests ADD COLUMN back_at INTEGER;
+  `,
 ];
 
 export function openDb(path) {

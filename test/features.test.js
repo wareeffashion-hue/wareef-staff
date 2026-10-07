@@ -231,3 +231,57 @@ test('password reset with a WhatsApp code', async () => {
   assert.equal((await basem('GET', '/api/me')).status, 401, 'old sessions are signed out');
   assert.equal((await anon('POST', '/api/login', { username: 'basem', password: 'newpass1' })).status, 200);
 });
+
+test('exit permission: ask for minutes, manager approves, out now, back to the office', async () => {
+  const { exitTick } = await import('../src/exits.js');
+  const mon = client();
+  await admin('PUT', `/api/users/${id('safwan')}`, { password: 'safwan-pass1', phone: '0500000004' });
+  assert.equal((await mon('POST', '/api/login', { username: 'safwan', password: 'safwan-pass1' })).status, 200);
+  assert.equal((await mon('POST', '/api/exit-requests', { minutes: 20, reason: 'بنك' })).status, 400, 'must be clocked in');
+  await mon('POST', '/api/punch', { type: 'in' });
+  const back5 = () => db.prepare('UPDATE punches SET ts = ts - 300000 WHERE user_id = ?').run(id('safwan'));
+  back5();
+  assert.equal((await mon('POST', '/api/exit-requests', { minutes: 2, reason: 'x' })).status, 400, 'at least 5 minutes');
+  const r = await mon('POST', '/api/exit-requests', { minutes: 20, reason: 'مراجعة بنك' });
+  assert.equal(r.status, 200);
+  const x = r.body.exit;
+  assert.equal(x.status, 'pending');
+  assert.equal((await mon('POST', '/api/exit-requests', { minutes: 20, reason: 'مرة ثانية' })).status, 400, 'one open request at a time');
+  const ask = notes("kind = 'exit_request'").at(-1);
+  assert.equal(ask.to_phone, MGR);
+  assert.match(ask.body, new RegExp(`موافق ج${x.id}`));
+  assert.match(ask.body, /20 دقيقة/);
+  // not usable before approval
+  assert.equal((await mon('POST', '/api/punch', { type: 'leave', exit_id: x.id })).status, 400);
+  assert.equal((await mon('GET', '/api/dashboard')).status, 403);
+  assert.equal((await admin('GET', '/api/dashboard')).body.exits.length, 1);
+  assert.match(handleIncoming(db, MGR, `موافق ج${x.id}`), /تمت الموافقة/);
+  assert.match(notes("kind = 'leave_status' AND to_phone = '966500000004'").at(-1).body, /اخرج الآن/);
+  back5();
+  const out = await mon('POST', '/api/punch', { type: 'leave', exit_id: x.id });
+  assert.equal(out.status, 200);
+  assert.ok(out.body.exit.left_at);
+  assert.match(notes("kind = 'leave'").at(-1).body, /بإذن 20 دقيقة/);
+  assert.equal((await mon('POST', '/api/punch', { type: 'leave', exit_id: x.id })).status, 400);
+  // overrun reminder fires once, 2 minutes after the window
+  const left = out.body.exit.left_at;
+  exitTick(db, left + 21 * 60_000);
+  assert.equal(notes("kind = 'exit_over'").length, 0);
+  exitTick(db, left + 23 * 60_000);
+  exitTick(db, left + 24 * 60_000);
+  assert.equal(notes("kind = 'exit_over'").length, 2, 'employee and manager, once each');
+  // step out 5 minutes ago (the punch and the permission window move together)
+  const { localTime } = await import('../src/time.js');
+  const lp = db.prepare("SELECT * FROM punches WHERE user_id = ? AND type = 'leave' ORDER BY id DESC LIMIT 1").get(id('safwan'));
+  const t0 = lp.ts - 300000;
+  db.prepare('UPDATE punches SET ts = ? WHERE id = ?').run(t0, lp.id);
+  db.prepare('UPDATE leave_requests SET left_at = ?, from_time = ?, to_time = ? WHERE id = ?').run(t0, localTime(t0), localTime(t0 + 20 * 60_000), x.id);
+  const back = await mon('POST', '/api/punch', { type: 'back' });
+  assert.equal(back.status, 200);
+  assert.ok(back.body.exit.back_at);
+  assert.match(notes("kind = 'back'").at(-1).body, /رجع للمكتب: صفوان[\s\S]*الإذن: \*20 دقيقة\*/);
+  // the approved window is covered time, not an exit
+  const { loadAttendance } = await import('../src/attendance.js');
+  const row = loadAttendance(db, { from: localDate(), to: localDate(), userId: id('safwan') })[0];
+  assert.equal(row.exitMinutes, 0);
+});

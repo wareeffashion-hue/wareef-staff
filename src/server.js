@@ -12,7 +12,7 @@ import {
   sessionCookie, validatePassword, validUsername, verifyPassword,
 } from './auth.js';
 import { getSettings, saveSettings, allPeriods, permissionList } from './settings.js';
-import { localDate, isDate, addDays, monthBounds, localTime } from './time.js';
+import { localDate, isDate, addDays, monthBounds, localTime, at } from './time.js';
 import { computeDay, loadAttendance, periodsFor, summarize } from './attendance.js';
 import { FLAG_LABELS, NEXT, lastPunch, managerPunch, recordPunch, voidPunch } from './punch.js';
 import {
@@ -26,6 +26,7 @@ import { decideLeave, decideRequest } from './decisions.js';
 import { announceAward, assertOpen, awardOf, closeMonth, closedMonth, monthlyData, monthlyTick, payrollFor, reopenMonth, sendPayslips } from './monthly.js';
 import { performance } from './performance.js';
 import { handleIncoming } from './commands.js';
+import { currentExit, endExit, exitTick, requestExit, startExit } from './exits.js';
 import { renderMonthlyReport, renderPayslip } from './print.js';
 import * as msg from './messages.js';
 import { DEDUCTION_LABELS, TICKET_KINDS, PUNCH_LABELS } from './reports.js';
@@ -89,12 +90,14 @@ function myToday(db, user, now = Date.now()) {
     .map((p) => ({ ...p, flags: JSON.parse(p.flags) }));
   const holiday = !!db.prepare('SELECT 1 FROM excuses WHERE user_id IS NULL AND date = ?').get(date);
   const excuse = db.prepare('SELECT kind FROM excuses WHERE user_id = ? AND date = ?').get(user.id, date)?.kind || null;
+  const permits = db.prepare("SELECT from_time, to_time FROM leave_requests WHERE user_id = ? AND from_date = ? AND kind = 'permission' AND status = 'approved'")
+    .all(user.id, date).map((p) => [at(date, p.from_time), at(date, p.to_time)]);
   const day = computeDay({
-    date, punches, periods: periodsFor(user, date, settings.schedule, holiday), excuse,
+    date, punches, periods: periodsFor(user, date, settings.schedule, holiday), excuse, permits,
     grace: settings.grace_minutes, maxExit: settings.max_exit_minutes, salary: 0, now,
   });
   const last = lastPunch(db, user.id, date);
-  return { now, date, day, punches, allowed: NEXT[last ? last.type : 'none'], geo: !!settings.security.geo, requireGeo: settings.security.require_geo };
+  return { now, date, day, punches, allowed: NEXT[last ? last.type : 'none'], geo: !!settings.security.geo, requireGeo: settings.security.require_geo, exit: currentExit(db, user.id, now) };
 }
 
 export function createApp(db) {
@@ -175,15 +178,37 @@ export function createApp(db) {
     if (user.role !== 'employee') throw new HttpError(403, 'البصمة للموظفين فقط');
     const body = parseJson(await readBody(req));
     const dev = deviceId(req);
+    // Stepping out on an approved exit permission: the reason comes from the request.
+    let permit = null;
+    if (body.type === 'leave' && body.exit_id) {
+      permit = db.prepare("SELECT * FROM leave_requests WHERE id = ? AND user_id = ? AND minutes > 0 AND status = 'approved' AND left_at IS NULL").get(Number(body.exit_id), user.id);
+      if (!permit) throw new HttpError(400, 'إذن الخروج غير صالح');
+      body.note = `بإذن ${permit.minutes} دقيقة: ${permit.reason}`;
+    }
     const p = recordPunch(db, user, body, { ip: clientIp(req), device: dev.id, userAgent: req.headers['user-agent'] || '' });
+    if (permit) startExit(db, user, permit.id, p.ts);
+    const back = p.type === 'back' ? endExit(db, user, p.ts) : null;
     const serious = p.flags.filter((f) => f !== 'new_device');
     if (serious.length) {
       notifyManager(db, 'flag', msg.mgrFlag({ name: user.name, type: p.type, time: localTime(p.ts), reasons: serious.map((f) => FLAG_LABELS[f]) }));
     }
-    if (p.type === 'leave') notifyManager(db, 'leave', msg.mgrLeave({ name: user.name, time: localTime(p.ts), reason: text(body.note, 200) }));
+    if (p.type === 'leave') notifyManager(db, 'leave', msg.mgrLeave({ name: user.name, time: localTime(p.ts), reason: permit ? text(body.note, 200) : `بدون إذن مسبق: ${text(body.note, 200)}` }));
     const today = myToday(db, user);
-    if (p.type !== 'leave') notifyActivity(db, 'punch', msg.mgrPunch({ name: user.name, type: p.type, time: localTime(p.ts), late: p.type === 'in' ? today.day.lateMinutes : 0 }));
+    if (p.type === 'back') notifyManager(db, 'back', msg.mgrBack({ name: user.name, time: localTime(p.ts), minutes: back?.q.minutes || 0, used: back?.used || 0, over: back?.over || 0 }));
+    else if (p.type !== 'leave') notifyActivity(db, 'punch', msg.mgrPunch({ name: user.name, type: p.type, time: localTime(p.ts), late: p.type === 'in' ? today.day.lateMinutes : 0 }));
     send(res, 200, today, dev.cookie ? { 'Set-Cookie': dev.cookie } : {});
+  }, { auth: true });
+  r.post('/api/exit-requests', async ({ req, user }) => {
+    if (user.role !== 'employee') throw new HttpError(403, 'للموظفين فقط');
+    if (!['in', 'back'].includes(lastPunch(db, user.id, localDate())?.type)) throw new HttpError(400, 'سجّل حضورك أولاً');
+    requestExit(db, user, parseJson(await readBody(req)));
+    return myToday(db, user);
+  }, { auth: true });
+  r.delete('/api/exit-requests/:id', ({ params, user }) => {
+    const q = db.prepare("SELECT * FROM leave_requests WHERE id = ? AND user_id = ? AND minutes > 0 AND status = 'pending'").get(Number(params.id), user.id);
+    if (!q) throw new HttpError(404, 'لا يوجد طلب بانتظار الموافقة');
+    db.prepare('DELETE FROM leave_requests WHERE id = ?').run(q.id);
+    return myToday(db, user);
   }, { auth: true });
   r.get('/api/my/month', ({ url, user }) => {
     const month = needMonth(url.searchParams.get('month'));
@@ -453,7 +478,10 @@ export function createApp(db) {
     const money = user.role === 'admin';
     return {
       ...rep, attendance: hideMoney(user, rep.attendance), deductions: money ? rep.deductions : [], debts: money ? rep.debts : [],
-      openTickets, pendingRequests, pendingLeaves, flagLabels: FLAG_LABELS, now: Date.now(),
+      openTickets, pendingRequests, pendingLeaves, flagLabels: FLAG_LABELS,
+      exits: db.prepare(`SELECT l.*, u.name AS user_name FROM leave_requests l JOIN users u ON u.id = l.user_id
+                         WHERE l.kind = 'permission' AND l.minutes > 0 AND l.from_date = ? AND (l.status = 'pending' OR (l.status = 'approved' AND l.back_at IS NULL))
+                         ORDER BY l.id`).all(date), now: Date.now(),
     };
   }, { auth: true });
   r.get('/api/attendance', ({ url, user }) => {
@@ -743,6 +771,9 @@ export function createApp(db) {
         ['للمدير: بصمة مشبوهة', msg.mgrFlag({ name: 'علي', type: 'in', time: '07:02', reasons: ['نفس الجهاز استُخدم لبصمة موظف آخر'] })],
         ['للمدير: طلب فسح', msg.mgrRequest({ name: 'باسم', kind: 'release', sku: 'AB-1042', qty: 3, reason: 'عيب مصنعي في الخياطة' })],
         ['للمدير: طلب إجازة', msg.mgrLeaveRequest({ name: 'صفوان', q: { id: 3, kind: 'leave', from_date: today, to_date: addDays(today, 1), reason: 'ظرف عائلي' } })],
+        ['للمدير: طلب إذن خروج', msg.mgrExitRequest({ name: 'علي', time: '10:05', q: { id: 14, minutes: 30, reason: 'مراجعة بنك' } })],
+        ['للموظف: موافقة على الخروج', msg.exitDecision({ q: { minutes: 30, status: 'approved', response: '' }, link })],
+        ['للمدير: رجع للمكتب', msg.mgrBack({ name: 'علي', time: '10:41', minutes: 30, used: 34, over: 4 })],
         ['للمدير: كل حركة', msg.mgrEntry({ name: 'باسم', date: today, lines: ['▫️ الطلبات المتأخرة: *7*', '▫️ منها متوفرة: *5*', '▫️ منها غير متوفرة: *2*\n> مقاس 56 أسود نافد عند المورد'] })],
         ['رد على أمر واتساب', msg.commandDone({ what: 'طلب الفسح رقم 12', status: 'approved', name: 'باسم', detail: 'AB-1042 × 3' })],
         ['قسيمة الراتب', msg.payslip({ name: 'علي', month: today.slice(0, 7), r: { salary: 4000, presentDays: 25, workDays: 26, absentDays: 1, lateMinutes: 35, deductions: 150, repayments: 500, net: 3350, debtBalance: 1000 }, link })],
@@ -908,7 +939,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   if (boot) {
     console.log(`حساب المدير: ${boot.username}${boot.password ? ` / كلمة المرور المؤقتة: ${boot.password}` : ''}`);
   }
-  startNotifier(db, [monthlyTick]);
+  startNotifier(db, [monthlyTick, exitTick]);
   waOnMessage((phone, text) => handleIncoming(db, phone, text));
   waAutoStart();
   const backup = () => dailyBackup(db).catch((e) => console.error('backup failed', e));
