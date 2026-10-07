@@ -60,28 +60,51 @@ async function api(path, { method = 'GET', body } = {}) {
   return data;
 }
 
+const calm = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+/** Leave with an exit animation, or at once when motion is reduced. */
+function fadeOut(el, cls = 'out', ms = 260) {
+  if (!el?.isConnected) return;
+  if (calm()) { el.remove(); return; }
+  el.classList.add(cls);
+  setTimeout(() => el.remove(), ms);
+}
+
 function toast(msg, err = false) {
-  $('.toast')?.remove();
+  $$('.toast').forEach((t) => fadeOut(t));
   const el = document.createElement('div');
+  const ms = err ? 5000 : 2600;
   el.className = `toast${err ? ' err' : ''}`;
+  el.style.setProperty('--life', `${ms}ms`);
   el.setAttribute('role', 'status');
   el.textContent = msg;
   document.body.append(el);
-  setTimeout(() => el.remove(), err ? 5000 : 2600);
+  setTimeout(() => fadeOut(el), ms);
+}
+
+/** Briefly mark an element with a feedback class (ok pulse, err shake). */
+function flash(el, cls, ms = 700) {
+  if (!el?.classList) return;
+  el.classList.remove('ok', 'err');
+  void el.offsetWidth; // restart the animation if it is already running
+  el.classList.add(cls);
+  setTimeout(() => el.classList.remove(cls), ms);
 }
 
 /** Run an async action from a button, with feedback. */
 async function act(btn, fn, okMsg) {
-  if (btn) btn.disabled = true;
+  if (btn) { btn.disabled = true; btn.classList?.add('busy'); }
   try {
     const r = await fn();
     if (okMsg) toast(okMsg);
+    flash(btn, 'ok');
     return r;
   } catch (e) {
     toast(e.message, true);
+    flash(btn, 'err', 550);
     return undefined;
   } finally {
-    if (btn) btn.disabled = false;
+    if (btn) { btn.disabled = false; btn.classList?.remove('busy'); }
   }
 }
 
@@ -99,6 +122,15 @@ function modal(title, html, mount) {
   const d = document.createElement('dialog');
   d.innerHTML = `<div class="dh"><h2>${esc(title)}</h2><button class="x" type="button" aria-label="إغلاق">×</button></div><div class="db">${html}</div>`;
   document.body.append(d);
+  // close with a short exit animation; Escape goes the same way
+  const shut = d.close.bind(d);
+  d.close = (v) => {
+    if (!d.open || d.classList.contains('closing')) return;
+    if (calm()) { shut(v); return; }
+    d.classList.add('closing');
+    setTimeout(() => shut(v), 200);
+  };
+  d.addEventListener('cancel', (e) => { e.preventDefault(); d.close(); });
   $('.x', d).onclick = () => d.close();
   d.addEventListener('close', () => d.remove());
   d.showModal();
@@ -127,7 +159,8 @@ const ICONS = {
   barcode: '<path d="M4 5v14M7 5v14M11 5v14M14 5v14M17 5v14M20 5v14"/><path d="M2 3h3M19 3h3M2 21h3M19 21h3"/>',
   sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
 };
-const icon = (n) => `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true">${ICONS[n]}</svg>`;
+// pathLength lets every stroke draw itself in with the same dash numbers
+const icon = (n) => `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true">${ICONS[n].replace(/<(path|circle|rect|ellipse)/g, '<$1 pathLength="1"')}</svg>`;
 
 // ------------------------------------------------------------------ phone notifications (Web Push)
 const PUSH = {
@@ -241,24 +274,67 @@ function navItems() {
 }
 
 const PAGES = {};
+// The shell (rail, tab bar, phone header) is built once and kept; moving between pages only
+// swaps the content, so the nav highlight can glide and the content can cross-fade.
+let CUR = null; // page on screen
+let ENTER = null; // set by route() for a real page change; the next render() plays the entrance
 function route() {
   const items = navItems();
   const key = location.hash.replace(/^#\/?/, '').split('?')[0] || items[0][0];
   const page = key === 'account' || (key === 'notifications' && ME.role === 'admin') || items.some(([k]) => k === key) ? key : items[0][0];
   clearInterval(window.__tick);
-  app.innerHTML = `<div class="shell">
-    <nav class="rail" aria-label="القائمة">
+  const sig = `${ME.id}|${items.map(([k]) => k).join(',')}`;
+  let shell = $('.shell');
+  if (!shell || shell.dataset.sig !== sig) {
+    app.innerHTML = `<div class="shell" data-sig="${esc(sig)}">
+    <nav class="rail" aria-label="القائمة"><span class="nav-ink" aria-hidden="true"></span>
       <div class="brand"><img src="/img/logo-mark.png" alt="وريف"><span>${esc(ME.name)}${ME.name === 'المدير' ? '' : `<br>${ME.role === 'admin' ? 'المدير' : ME.manager ? 'مشرف' : 'موظف'}`}</span></div>
-      ${items.map(([k, label, ic]) => `<a href="#/${k}" class="${k === page ? 'on' : ''}">${icon(ic)}${label}</a>`).join('')}
-      <div class="foot">${ME.role === 'admin' ? `<a href="#/account">${icon('user')}حسابي</a>` : ''}<a href="#" id="logout">${icon('out')}تسجيل الخروج</a></div>
+      ${items.map(([k, label, ic]) => `<a href="#/${k}" data-k="${k}">${icon(ic)}<span>${label}</span></a>`).join('')}
+      <div class="foot">${ME.role === 'admin' ? `<a href="#/account" data-k="account">${icon('user')}<span>حسابي</span></a>` : ''}<a href="#" id="logout">${icon('out')}<span>تسجيل الخروج</span></a></div>
     </nav>
-    <main class="main" id="page"><div class="mobile-head"><img src="/img/logo-mark.png" alt="وريف"><div class="mh-tools"><a href="#/account" class="mh-me">${icon('user')}${esc(ME.name)}</a><button type="button" class="mh-out" data-logout aria-label="تسجيل الخروج" title="تسجيل الخروج">${icon('out')}</button></div></div><p class="muted">جاري التحميل...</p></main>
-    <nav class="tabbar" aria-label="القائمة">${items.map(([k, label, ic]) => `<a href="#/${k}" class="${k === page ? 'on' : ''}">${icon(ic)}${label}</a>`).join('')}</nav>
+    <main class="main" id="page"><div class="mobile-head"><img src="/img/logo-mark.png" alt="وريف"><div class="mh-tools"><a href="#/account" class="mh-me">${icon('user')}${esc(ME.name)}</a><button type="button" class="mh-out" data-logout aria-label="تسجيل الخروج" title="تسجيل الخروج">${icon('out')}</button></div></div>
+      <div class="skel" aria-label="جاري التحميل"><i></i><i></i><i></i></div></main>
+    <nav class="tabbar" aria-label="القائمة"><span class="nav-ink" aria-hidden="true"></span>${items.map(([k, label, ic]) => `<a href="#/${k}" data-k="${k}">${icon(ic)}<span>${label}</span></a>`).join('')}</nav>
+    <div class="loadbar" aria-hidden="true"></div>
   </div>`;
-  $('#logout').onclick = (e) => { e.preventDefault(); logout(); };
+    shell = $('.shell');
+    $('#logout').onclick = (e) => { e.preventDefault(); logout(); };
+    CUR = null;
+  }
+  const moved = CUR !== page;
+  const order = (k) => items.findIndex(([x]) => x === k);
+  ENTER = moved ? { dir: CUR && order(page) < order(CUR) ? -1 : 1, first: !CUR } : null;
+  const prev = CUR;
+  CUR = page;
+  $$('.rail a[data-k], .tabbar a[data-k]', shell).forEach((a) => { const on = a.dataset.k === page; a.classList.toggle('on', on); if (on) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); });
+  placeInk(!prev);
+  if (moved && prev) {
+    // the old page drifts out while the new one loads
+    const main = $('#page');
+    main.style.setProperty('--dir', ENTER.dir);
+    if (!calm()) main.classList.add('leaving');
+    shell.classList.add('loading');
+  }
   const fn = PAGES[page] || PAGES.account;
-  fn().catch((e) => { $('#page').innerHTML = `<div class="panel"><p>${esc(e.message)}</p></div>`; });
+  fn().catch((e) => { render(`<div class="panel"><p>${esc(e.message)}</p></div>`); });
 }
+
+/** Slide the highlight under the active item, in the side rail and in the phone tab bar. */
+function placeInk(instant = false) {
+  for (const nav of $$('.rail, .tabbar')) {
+    const ink = $('.nav-ink', nav);
+    const on = $('a.on', nav);
+    if (!ink) continue;
+    ink.classList.toggle('instant', instant);
+    if (!on || !on.offsetParent) { ink.style.opacity = 0; continue; }
+    ink.style.opacity = 1;
+    ink.style.width = `${on.offsetWidth}px`;
+    ink.style.height = `${on.offsetHeight}px`;
+    ink.style.transform = `translate(${on.offsetLeft}px, ${on.offsetTop}px)`;
+    if (nav.classList.contains('tabbar') && nav.scrollWidth > nav.clientWidth) on.scrollIntoView({ inline: 'center', block: 'nearest', behavior: instant || calm() ? 'auto' : 'smooth' });
+  }
+}
+window.addEventListener('resize', () => placeInk(true));
 
 async function logout() {
   if (!confirm('تسجيل الخروج من النظام؟')) return;
@@ -271,9 +347,88 @@ document.addEventListener('click', (e) => { if (e.target.closest('[data-logout]'
 
 /** Write the page body (keeps the phone header). */
 function render(html) {
+  const main = $('#page');
   const head = $('.mobile-head').outerHTML;
-  $('#page').innerHTML = head + html;
-  return $('#page');
+  main.innerHTML = head + html;
+  main.classList.remove('leaving');
+  $('.shell')?.classList.remove('loading');
+  if (ENTER) {
+    const { dir, first } = ENTER;
+    ENTER = null;
+    if (!first) window.scrollTo({ top: 0 });
+    if (!calm()) enter(main, first ? 0 : dir);
+  }
+  return main;
+}
+
+/** Stagger the new page in: blocks rise one after another, then the small cards inside them. */
+function enter(main, dir) {
+  main.style.setProperty('--dir', dir);
+  let i = 0;
+  const mark = (el, step = 1) => { el.dataset.in = ''; el.style.setProperty('--i', Math.min(i, 14)); i += step; };
+  for (const el of main.children) {
+    if (el.classList.contains('mobile-head')) continue;
+    mark(el);
+    $$('.kpis > .kpi, .staff > .sc, .list > .item, .perf > .pcard, tbody > tr', el).slice(0, 16).forEach((c, n) => { c.dataset.in = ''; c.style.setProperty('--i', Math.min(i + n * 0.5, 16)); });
+  }
+  rollNumbers(main);
+  // the entrance runs once; drop the marks so hover transforms work freely afterwards
+  setTimeout(() => $$('[data-in]', main).forEach((el) => { delete el.dataset.in; }), 1600);
+}
+
+// ------------------------------------------------------------------ micro-interactions
+/** Ink ripple from the touch point on buttons, tabs, cards and list rows. */
+const RIPPLE = '.btn, .seg button, .item, .sc, .rail a, .tabbar a, .mh-out, .mh-me, .pillbtn';
+document.addEventListener('pointerdown', (e) => {
+  const host = e.target.closest?.(RIPPLE);
+  if (!host || host.disabled || calm()) return;
+  const r = host.getBoundingClientRect();
+  const size = Math.hypot(r.width, r.height) * 2;
+  const dot = document.createElement('span');
+  dot.className = 'ripple';
+  dot.style.cssText = `width:${size}px;height:${size}px;left:${e.clientX - r.left - size / 2}px;top:${e.clientY - r.top - size / 2}px`;
+  host.append(dot);
+  setTimeout(() => dot.remove(), 700);
+}, { passive: true });
+
+/** A burst of foil confetti from a button, for the moments worth celebrating (a punch). */
+function burst(el) {
+  if (!el || calm()) return;
+  const r = el.getBoundingClientRect();
+  const cx = r.left + r.width / 2;
+  const cy = r.top + r.height / 2;
+  const colors = ['#5fe3cb', '#86b0ff', '#ab86ff', '#ff8cc4', '#ffc27f'];
+  for (let n = 0; n < 26; n++) {
+    const p = document.createElement('i');
+    p.className = 'spark';
+    const a = (n / 26) * Math.PI * 2 + Math.random() * 0.4;
+    const d = 60 + Math.random() * 90;
+    const s = 5 + Math.random() * 6;
+    p.style.cssText = `left:${cx}px;top:${cy}px;width:${s}px;height:${s * (Math.random() < 0.5 ? 1 : 2.2)}px;background:${colors[n % colors.length]}`;
+    document.body.append(p);
+    p.animate([
+      { transform: 'translate(-50%, -50%) scale(.4) rotate(0deg)', opacity: 1 },
+      { transform: `translate(calc(-50% + ${Math.cos(a) * d}px), calc(-50% + ${Math.sin(a) * d - 30}px)) scale(1) rotate(${Math.random() * 540}deg)`, opacity: 1, offset: 0.55 },
+      { transform: `translate(calc(-50% + ${Math.cos(a) * d * 1.15}px), calc(-50% + ${Math.sin(a) * d + 40}px)) scale(.6) rotate(${Math.random() * 720}deg)`, opacity: 0 },
+    ], { duration: 900 + Math.random() * 400, easing: 'cubic-bezier(.2,.7,.3,1)' }).onfinish = () => p.remove();
+  }
+  if (navigator.vibrate) navigator.vibrate(18);
+}
+
+/** Plain whole numbers in KPI tiles count up from zero on arrival. */
+function rollNumbers(root) {
+  const els = $$('.kpi b, .scount b, .band b, .bigstats b, .ribbon .keys b', root).filter((el) => !el.dataset.count && !el.children.length && /^\d{1,3}(,\d{3})*$/.test(el.textContent.trim()) && el.textContent.trim() !== '0');
+  if (!els.length) return;
+  const goal = els.map((el) => +el.textContent.replace(/,/g, ''));
+  const t0 = performance.now();
+  const step = (t) => {
+    const k = Math.min(1, (t - t0) / 900);
+    const e = 1 - (1 - k) ** 4;
+    els.forEach((el, n) => { if (el.isConnected) el.textContent = int(Math.round(goal[n] * e)); });
+    if (k < 1) requestAnimationFrame(step);
+  };
+  els.forEach((el) => { el.textContent = '0'; });
+  requestAnimationFrame(step);
 }
 const refresh = () => route();
 
@@ -361,7 +516,7 @@ PAGES.today = async () => {
     const pos = data.geo ? await locate() : null;
     if (data.requireGeo && !pos) { btn.disabled = false; toast('فعّل خدمة الموقع في جوالك واسمح للمتصفح باستخدامها', true); return; }
     const r = await act(btn, () => api('/api/punch', { method: 'POST', body: { type, note, exit_id: exitId, client_ts: Date.now(), ...(pos || {}) } }), `تم تسجيل ${type === 'back' ? 'رجوعك' : PUNCH[type]} الساعة ${fmtT(nowMs())}`);
-    if (r) { data = r; draw(); }
+    if (r) { burst(btn); data = r; draw(); }
   }
   draw();
   window.__tick = setInterval(tick, 1000);
