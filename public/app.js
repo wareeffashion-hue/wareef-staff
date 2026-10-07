@@ -122,6 +122,9 @@ const ICONS = {
   out: '<path d="M15 4h4a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1h-4M10 17l-5-5 5-5M5 12h11"/>',
   down: '<path d="M12 4v11M7 10l5 5 5-5M5 20h14"/>',
   swap: '<path d="M7 4 3 8l4 4M3 8h13a4 4 0 0 1 4 4M17 20l4-4-4-4M21 16H8a4 4 0 0 1-4-4"/>',
+  chart: '<path d="M4 4v16h16"/><path d="M7 15l4-5 3 3 5-7"/>',
+  trophy: '<path d="M8 4h8v5a4 4 0 0 1-8 0z"/><path d="M8 6H5a3 3 0 0 0 3 4M16 6h3a3 3 0 0 1-3 4M12 13v4M8 21h8M9 17h6"/>',
+  sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
 };
 const icon = (n) => `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true">${ICONS[n]}</svg>`;
 
@@ -150,7 +153,9 @@ function renderLogin() {
     <label class="f">اسم المستخدم<input name="username" id="lg-user" autocomplete="username" autocapitalize="none" dir="ltr" required></label>
     <label class="f">كلمة المرور<input name="password" id="lg-pass" type="password" autocomplete="current-password" dir="ltr" required></label>
     <button class="btn" type="submit">دخول</button>
+    <button class="link" type="button" id="forgot" style="justify-self:center">نسيت كلمة المرور؟</button>
   </form></div>`;
+  $('#forgot').onclick = () => forgotPassword($('#lg-user').value.trim());
   $('#loginForm').onsubmit = async (e) => {
     e.preventDefault();
     const btn = $('button', e.target);
@@ -159,18 +164,52 @@ function renderLogin() {
   };
 }
 
+/** Two steps: a code to the WhatsApp number on file, then the new password. */
+function forgotPassword(username = '') {
+  modal('استعادة كلمة المرور', `<form class="form" id="fp1">
+      <p class="muted small">يوصلك رمز تحقق على واتساب الرقم المسجّل لك في النظام.</p>
+      <label class="f">اسم المستخدم<input name="username" id="fp-user" dir="ltr" autocapitalize="none" required value="${esc(username)}"></label>
+      <button class="btn" type="submit">أرسل الرمز</button>
+    </form>
+    <form class="form" id="fp2" hidden>
+      <p class="muted small">إذا كان الحساب مربوطاً برقم واتساب، وصلك الرمز الآن.</p>
+      <label class="f">رمز التحقق<input name="code" id="fp-code" dir="ltr" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required></label>
+      <label class="f">كلمة المرور الجديدة<input name="password" id="fp-pass" type="password" dir="ltr" minlength="6" autocomplete="new-password" required></label>
+      <button class="btn" type="submit">حفظ كلمة المرور</button>
+    </form>`, (dl) => {
+    $('#fp1', dl).onsubmit = async (e) => {
+      e.preventDefault();
+      if (await act($('button', e.target), () => api('/api/reset/request', { method: 'POST', body: formData(e.target) }))) { e.target.hidden = true; $('#fp2', dl).hidden = false; $('#fp-code', dl).focus(); }
+    };
+    $('#fp2', dl).onsubmit = async (e) => {
+      e.preventDefault();
+      const body = { ...formData(e.target), username: $('#fp-user', dl).value };
+      if (await act($('button', e.target), () => api('/api/reset/confirm', { method: 'POST', body }), 'تم تغيير كلمة المرور. ادخل بها الآن')) { dl.close(); $('#lg-user').value = body.username; $('#lg-pass').focus(); }
+    };
+  });
+}
+
 function navItems() {
   if (ME.role === 'admin') {
     return [
-      ['dashboard', 'لوحة اليوم', 'home'], ['attendance', 'الحضور والانصراف', 'clock'], ['payroll', 'الرواتب', 'wallet'],
+      ['dashboard', 'لوحة اليوم', 'home'], ['attendance', 'الحضور والانصراف', 'clock'], ['leaves', 'الإجازات والاستئذان', 'sun'], ['payroll', 'الرواتب', 'wallet'],
       ['money', 'الخصومات والسلف', 'coins'], ['ops', 'العمليات اليومية', 'box'], ['requests', 'الفسح والنواقص', 'swap'], ['tickets', 'التذاكر', 'ticket'],
+      ['performance', 'الأداء', 'trophy'], ['analytics', 'المؤشرات', 'chart'],
       ['flags', 'مؤشرات التلاعب', 'shield'], ['staff', 'الموظفون', 'users'], ['reports', 'التقارير والتصدير', 'file'], ['settings', 'الإعدادات', 'gear'],
     ];
   }
+  const ops = ME.perms.some((p) => p === 'orders' || p === 'stock' || p.startsWith('m:')) ? [['ops', 'العمليات', 'box']] : [];
+  if (ME.manager) {
+    // Supervisor: an employee who punches, plus the team pages without salaries or settings.
+    return [
+      ['today', 'البصمة', 'clock'], ['dashboard', 'لوحة اليوم', 'home'], ['attendance', 'الحضور والانصراف', 'cal'], ['leaves', 'الإجازات والاستئذان', 'sun'],
+      ...ops, ['requests', 'الفسح والنواقص', 'swap'], ['tickets', 'التذاكر', 'ticket'], ['performance', 'الأداء', 'trophy'], ['analytics', 'المؤشرات', 'chart'],
+      ['flags', 'مؤشرات التلاعب', 'shield'], ['reports', 'التقارير', 'file'], ['mine', 'سجلي', 'wallet'], ['account', 'حسابي', 'user'],
+    ];
+  }
   return [
-    ['today', 'البصمة', 'clock'], ['mine', 'سجلي', 'cal'], ['tickets', 'تذاكري', 'ticket'],
-    ...(ME.perms.some((p) => p === 'orders' || p === 'stock' || p.startsWith('m:')) ? [['ops', 'العمليات', 'box']] : []),
-    ...(ME.perms.includes('requests') ? [['requests', 'الفسح والنواقص', 'swap']] : []), ['account', 'حسابي', 'user'],
+    ['today', 'البصمة', 'clock'], ['mine', 'سجلي', 'cal'], ['leaves', 'إجازاتي', 'sun'], ['tickets', 'تذاكري', 'ticket'],
+    ...ops, ...(ME.perms.includes('requests') ? [['requests', 'الفسح والنواقص', 'swap']] : []), ['account', 'حسابي', 'user'],
   ];
 }
 
@@ -182,7 +221,7 @@ function route() {
   clearInterval(window.__tick);
   app.innerHTML = `<div class="shell">
     <nav class="rail" aria-label="القائمة">
-      <div class="brand"><img src="/img/logo-mark.png" alt="وريف"><span>${esc(ME.name)}${ME.name === 'المدير' ? '' : `<br>${ME.role === 'admin' ? 'المدير' : 'موظف'}`}</span></div>
+      <div class="brand"><img src="/img/logo-mark.png" alt="وريف"><span>${esc(ME.name)}${ME.name === 'المدير' ? '' : `<br>${ME.role === 'admin' ? 'المدير' : ME.manager ? 'مشرف' : 'موظف'}`}</span></div>
       ${items.map(([k, label, ic]) => `<a href="#/${k}" class="${k === page ? 'on' : ''}">${icon(ic)}${label}</a>`).join('')}
       <div class="foot">${ME.role === 'admin' ? `<a href="#/account">${icon('user')}حسابي</a>` : ''}<a href="#" id="logout">${icon('out')}تسجيل الخروج</a></div>
     </nav>
@@ -282,7 +321,10 @@ PAGES.mine = async () => {
   const s = d.summary || {};
   const dedTotal = d.deductions.reduce((t, x) => t + x.amount, 0);
   const pg = render(`
-    <div class="topline"><h1>سجلي الشهري</h1><div class="tools"><input type="month" id="mm" value="${month}" aria-label="الشهر"></div></div>
+    <div class="topline"><h1>سجلي الشهري</h1><div class="tools"><input type="month" id="mm" value="${month}" aria-label="الشهر">
+      ${d.closed ? `<a class="btn" href="/payslip?month=${month}" target="_blank" rel="noopener">${icon('file')}قسيمة الراتب</a>` : ''}</div></div>
+    ${d.award?.user_id === ME.id ? `<section class="panel award"><b>🏆 أنت موظف الشهر</b><span>تقييمك ${d.award.score} من 100. شكراً على التزامك وجهدك 🤍</span></section>`
+      : d.award ? `<section class="panel award soft"><b>🏆 موظف الشهر: ${esc(d.award.name)}</b><span>المنافسة مفتوحة للشهر الجاي</span></section>` : ''}
     <div class="kpis">
       <div class="kpi good"><b>${int(s.presentDays)}</b><span>أيام الحضور</span></div>
       <div class="kpi ${s.absentDays ? 'bad' : ''}"><b>${int(s.absentDays)}</b><span>أيام الغياب</span></div>
@@ -372,6 +414,7 @@ PAGES.dashboard = async () => {
       <div><b data-count="${mv('shipments')}">0</b><span>شحنات</span></div>
       <div><b data-count="${mv('returns_warehouse')}">0</b><span>مرتجعات للمستودع</span></div>
       <div class="${d.pendingRequests ? 'warn' : ''}"><b data-count="${d.pendingRequests}">0</b><span>طلبات فسح ونواقص</span></div>
+      <div class="${d.pendingLeaves ? 'warn' : ''}"><b data-count="${d.pendingLeaves}">0</b><span>طلبات إجازة واستئذان</span></div>
       <div class="${flagged ? 'bad' : ''}"><b data-count="${flagged}">0</b><span>بصمات مشبوهة</span></div>
       <div class="${d.openTickets ? 'warn' : ''}"><b data-count="${d.openTickets}">0</b><span>تذاكر مفتوحة</span></div>
     </div>
@@ -594,7 +637,7 @@ async function dayDetail(userId, name, date) {
 // ------------------------------------------------------------------ manager: attendance
 let staffCache = null;
 async function staffList() {
-  if (!staffCache) staffCache = (await api('/api/users')).users.filter((u) => u.role === 'employee');
+  if (!staffCache) staffCache = (await api('/api/staff')).users;
   return staffCache;
 }
 const staffOptions = (list, sel, all = 'كل الموظفين') => `${all ? opt('', all, sel) : ''}${list.filter((u) => u.active).map((u) => opt(u.id, u.name, sel)).join('')}`;
@@ -605,6 +648,7 @@ PAGES.attendance = async () => {
     api(`/api/attendance?from=${st.from}&to=${st.to}&user_id=${st.user}`), staffList(), api(`/api/excuses?from=${addDays(today(), -60)}&to=${addDays(today(), 60)}`),
   ]);
   if (!Object.keys(FLAGS).length) FLAGS = (await api(`/api/flags?from=${today()}&to=${today()}`)).labels;
+  const mny = ME.role === 'admin';
   const pg = render(`
     <div class="topline"><h1>الحضور والانصراف</h1>
       <form class="tools" id="flt">
@@ -614,14 +658,14 @@ PAGES.attendance = async () => {
         <a class="btn ghost" href="/api/export/attendance?from=${st.from}&to=${st.to}">${icon('down')}تصدير</a>
       </form></div>
     <section class="panel"><header><h2>الملخص</h2><span class="muted small">${st.from} إلى ${st.to}</span></header>
-      ${table(['الموظف', 'أيام العمل', 'حضور', 'غياب', 'غياب جزئي', 'أيام تأخير', 'دقائق التأخير', 'انصراف مبكر', 'خروج أثناء الدوام', 'إضافي', 'الخصم المقترح (ر.س)'],
-        d.summary.map((s) => `<tr><td><b>${esc(s.name)}</b></td><td>${s.workDays}</td><td>${s.presentDays}</td><td>${s.absentDays ? pill(s.absentDays, 'bad') : 0}</td><td>${s.partialDays}</td><td>${s.lateDays}</td><td>${mn(s.lateMinutes)}</td><td>${mn(s.earlyMinutes)}</td><td>${mn(s.exitMinutes)}</td><td>${hm(s.overtimeMinutes)}</td><td>${money(s.suggested)}</td></tr>`))}
-      <p class="muted small">الخصم المقترح يُحسب من الراتب: أجر اليوم = الراتب ÷ 30، مقسوماً على دقائق دوام ذلك اليوم. لا يُخصم شيء إلا إذا اعتمدته من صفحة الرواتب أو الخصومات.</p>
+      ${table(['الموظف', 'أيام العمل', 'حضور', 'غياب', 'غياب جزئي', 'أيام تأخير', 'دقائق التأخير', 'انصراف مبكر', 'خروج أثناء الدوام', 'إضافي', ...(mny ? ['الخصم المقترح (ر.س)'] : [])],
+        d.summary.map((s) => `<tr><td><b>${esc(s.name)}</b></td><td>${s.workDays}</td><td>${s.presentDays}</td><td>${s.absentDays ? pill(s.absentDays, 'bad') : 0}</td><td>${s.partialDays}</td><td>${s.lateDays}</td><td>${mn(s.lateMinutes)}</td><td>${mn(s.earlyMinutes)}</td><td>${mn(s.exitMinutes)}</td><td>${hm(s.overtimeMinutes)}</td>${mny ? `<td>${money(s.suggested)}</td>` : ''}</tr>`))}
+      <p class="muted small" ${mny ? '' : 'hidden'}>الخصم المقترح يُحسب من الراتب: أجر اليوم = الراتب ÷ 30، مقسوماً على دقائق دوام ذلك اليوم. لا يُخصم شيء إلا إذا اعتمدته من صفحة الرواتب أو الخصومات.</p>
     </section>
     <section class="panel"><header><h2>التفاصيل اليومية</h2><span class="muted small">اضغط على أي صف لعرض البصمات</span></header>
-      ${table(['اليوم', 'الموظف', 'الحالة', 'الحضور', 'الانصراف', 'تأخير', 'انصراف مبكر', 'خروج', 'ساعات العمل', 'إضافي', 'مقترح', 'ملاحظات'],
+      ${table(['اليوم', 'الموظف', 'الحالة', 'الحضور', 'الانصراف', 'تأخير', 'انصراف مبكر', 'خروج', 'ساعات العمل', 'إضافي', ...(mny ? ['مقترح'] : []), 'ملاحظات'],
         d.rows.slice().sort((a, b) => b.date.localeCompare(a.date) || a.userId - b.userId).map((r) => `<tr class="click" data-u="${r.userId}" data-n="${esc(r.name)}" data-d="${r.date}">
-          <td>${fmtDate(r.date)}</td><td>${esc(r.name)}</td><td>${statusPill(r.status)}</td><td>${fmtT(r.firstIn)}</td><td>${fmtT(r.lastOut)}</td><td>${mn(r.lateMinutes)}</td><td>${mn(r.earlyMinutes)}</td><td>${mn(r.exitMinutes)}</td><td>${hm(r.presentMinutes)}</td><td>${hm(r.overtimeMinutes)}</td><td>${r.suggested ? money(r.suggested) : '—'}</td><td>${flagList(r.flags)}</td></tr>`))}
+          <td>${fmtDate(r.date)}</td><td>${esc(r.name)}</td><td>${statusPill(r.status)}</td><td>${fmtT(r.firstIn)}</td><td>${fmtT(r.lastOut)}</td><td>${mn(r.lateMinutes)}</td><td>${mn(r.earlyMinutes)}</td><td>${mn(r.exitMinutes)}</td><td>${hm(r.presentMinutes)}</td><td>${hm(r.overtimeMinutes)}</td>${mny ? `<td>${r.suggested ? money(r.suggested) : '—'}</td>` : ''}<td>${flagList(r.flags)}</td></tr>`))}
     </section>
     <section class="panel"><header><h2>الإجازات والأعذار</h2><span class="muted small">الأيام المعذورة لا يُحسب فيها غياب ولا تأخير</span></header>
       <form class="form" id="exF"><div class="row">
@@ -650,17 +694,37 @@ PAGES.payroll = async () => {
   const sum = (k) => d.rows.reduce((t, r) => t + r[k], 0);
   const pg = render(`
     <div class="topline"><h1>مسيّر الرواتب</h1><div class="tools"><input type="month" id="pm" value="${month}" aria-label="الشهر">
-      <a class="btn" href="/api/export/payroll?month=${month}">${icon('down')}تصدير Excel</a></div></div>
+      <a class="btn ghost" href="/api/export/payroll?month=${month}">${icon('down')}تصدير Excel</a>
+      ${d.closed ? `<button class="btn ghost" id="pay-send" type="button">إعادة إرسال القسائم</button><button class="btn ghost" id="pay-open" type="button">فتح الشهر</button>`
+        : `<button class="btn" id="pay-close" type="button">إقفال الشهر وإرسال القسائم</button>`}</div></div>
+    <section class="panel closebar ${d.closed ? 'done' : ''}">
+      ${d.closed
+        ? `<p>${pill('مقفل', 'good')} أُقفل ${esc(d.closed.by ? `بواسطة ${d.closed.by} ` : '')}يوم ${new Date(d.closed.at + tz * 60000).toISOString().slice(0, 10)}. الأرقام مجمّدة، والخصومات والسلف لهذا الشهر لا تتغير حتى تفتحه.</p>`
+        : `<p>${pill('مفتوح', 'warn')} الأرقام تتحدث مع كل بصمة وخصم. في نهاية الشهر اضغط «إقفال الشهر»: يتجمّد المسيّر وتوصل كل موظف قسيمة راتبه على واتساب.</p>`}
+    </section>
     <section class="panel">
       ${table(['الموظف', 'الراتب', 'حضور', 'غياب', 'أيام تأخير', 'دقائق التأخير', 'خروج', 'الخصم المقترح', 'الخصومات المعتمدة', 'أقساط السلف', 'الصافي', 'متبقي السلف', ''],
         d.rows.map((r) => `<tr><td><b>${esc(r.name)}</b></td><td>${money(r.salary)}</td><td>${r.presentDays}/${r.workDays}</td><td>${r.absentDays ? pill(r.absentDays, 'bad') : 0}</td><td>${r.lateDays}</td><td>${mn(r.lateMinutes)}</td><td>${mn(r.exitMinutes + r.earlyMinutes)}</td>
           <td>${money(r.suggested)}</td><td>${money(r.deductions)}</td><td>${money(r.repayments)}</td><td><b>${money(r.net)}</b></td><td>${money(r.debtBalance)}</td>
-          <td><button class="btn sm ghost" data-ded="${r.userId}" data-amt="${Math.max(0, Math.round((r.suggested - r.deductions) * 100) / 100)}">خصم</button></td></tr>`),
+          <td class="nowrap">${d.closed ? '' : `<button class="btn sm ghost" data-ded="${r.userId}" data-amt="${Math.max(0, Math.round((r.suggested - r.deductions) * 100) / 100)}">خصم</button> `}<a class="link" href="/payslip?month=${month}&user_id=${r.userId}" target="_blank" rel="noopener">القسيمة</a></td></tr>`),
         { foot: ['الإجمالي', money(sum('salary')), '', '', '', '', '', money(sum('suggested')), money(sum('deductions')), money(sum('repayments')), money(sum('net')), money(sum('debtBalance')), ''] })}
       <p class="muted small">الصافي = الراتب − الخصومات المعتمدة − أقساط السلف المخصومة من الراتب. الخصم المقترح للاسترشاد فقط ولا يدخل في الصافي حتى تعتمده. ${!d.rows.some((r) => r.salary) ? '<b>أدخل رواتب الموظفين من صفحة الموظفين ليظهر الخصم المقترح.</b>' : ''}</p>
     </section>`);
   $('#pm', pg).onchange = (e) => { sessionStorage.setItem('pay-month', e.target.value || thisMonth()); refresh(); };
   $$('[data-ded]', pg).forEach((b) => { b.onclick = () => deductionModal(+b.dataset.ded, b.dataset.amt); });
+  const close = $('#pay-close', pg);
+  if (close) close.onclick = async () => {
+    if (!confirm(`إقفال مسيّر ${month}؟ تتجمّد الأرقام وتوصل القسائم للموظفين على واتساب.`)) return;
+    const r = await act(close, () => api('/api/payroll/close', { method: 'POST', body: { month } }));
+    if (r) { toast(`تم الإقفال. أُرسلت ${r.sent} قسيمة`); refresh(); }
+  };
+  const send = $('#pay-send', pg);
+  if (send) send.onclick = async () => { const r = await act(send, () => api('/api/payroll/payslips', { method: 'POST', body: { month } })); if (r) toast(`أُرسلت ${r.sent} قسيمة`); };
+  const reopen = $('#pay-open', pg);
+  if (reopen) reopen.onclick = async () => {
+    if (!confirm('فتح الشهر يسمح بتعديل الخصومات والسلف، وتعود الأرقام تتحدث. متأكد؟')) return;
+    if (await act(reopen, () => api(`/api/payroll/close/${month}`, { method: 'DELETE' }), 'تم فتح الشهر')) refresh();
+  };
 };
 
 async function deductionModal(userId = '', amount = '') {
@@ -798,8 +862,9 @@ PAGES.ops = async () => {
         { empty: 'لم يُسجَّل شيء بعد', foot: d.ops.length ? ['الإجمالي', ...(may('orders') ? [...d.channels.map((c) => int(d.ops.reduce((t, o) => t + (o.channels[c.key]?.count || 0), 0))), int(tot('totalOrders')), money(tot('totalAmount'))] : []), ...myMetrics.map((m) => int(mtot(m.key))), ''] : null })}
     </section>
     ${may('stock') ? `<section class="panel"><header><h2>سجل الفواتير والمرتجعات للتجار</h2></header>
-      ${table(['التاريخ', 'النوع', 'التاجر', 'رقم الفاتورة', 'كود المنتج', 'العدد', 'القيمة', 'ملاحظة', 'سجّلها', ...(isAdmin ? [''] : [])],
-        d.stock.map((s) => `<tr><td>${s.date}</td><td>${pill(STOCK[s.kind], s.kind === 'new_goods' ? 'good' : 'warn')}</td><td>${esc(s.party)}</td><td dir="ltr">${esc(s.invoice_no)}</td><td dir="ltr"><b>${esc(s.sku || s.description)}</b></td><td>${int(s.quantity)}</td><td>${s.value ? money(s.value) : '—'}</td><td class="wrap">${esc(s.note)}</td><td>${esc(s.created_by_name || '')}</td>${isAdmin ? `<td><button class="link bad" data-sd="${s.id}">حذف</button></td>` : ''}</tr>`),
+      ${table(['التاريخ', 'النوع', 'التاجر', 'رقم الفاتورة', 'كود المنتج', 'العدد', 'القيمة', 'ملاحظة', 'سجّلها', 'حالة المرتجع', ...(isAdmin ? [''] : [])],
+        d.stock.map((s) => `<tr><td>${s.date}</td><td>${pill(STOCK[s.kind], s.kind === 'new_goods' ? 'good' : 'warn')}</td><td>${esc(s.party)}</td><td dir="ltr">${esc(s.invoice_no)}</td><td dir="ltr"><b>${esc(s.sku || s.description)}</b></td><td>${int(s.quantity)}</td><td>${s.value ? money(s.value) : '—'}</td><td class="wrap">${esc(s.note)}</td><td>${esc(s.created_by_name || '')}</td>
+          <td>${s.kind === 'merchant_return' ? `<button class="pillbtn" type="button" data-rs="${s.id}" title="${esc(s.status_note)}">${pill(...(RET[s.status] || RET.ready))}</button>` : ''}</td>${isAdmin ? `<td><button class="link bad" data-sd="${s.id}">حذف</button></td>` : ''}</tr>`),
         { empty: 'لا توجد سجلات' })}
     </section>` : ''}`);
 
@@ -840,7 +905,25 @@ PAGES.ops = async () => {
     };
   }
   confirmDelete(pg, '[data-sd]', (id) => `/api/stock/${id}`);
+  $$('[data-rs]', pg).forEach((b) => { b.onclick = () => {
+    const s = d.stock.find((x) => x.id === +b.dataset.rs);
+    const siblings = d.stock.filter((x) => x.kind === 'merchant_return' && x.date === s.date && x.party === s.party && x.invoice_no === s.invoice_no).length;
+    modal(`مرتجع ${s.sku} · ${s.party}`, `<form class="form" id="rsF">
+        <div class="seg" role="radiogroup" aria-label="الحالة">${Object.entries(RET).map(([k, v]) => `<button type="button" data-k="${k}" class="${(s.status || 'ready') === k ? 'on' : ''}">${v[0]}</button>`).join('')}</div>
+        <label class="f">ملاحظة (شركة الشحن، رقم البوليصة، مبلغ التسوية...)<input name="note" id="rs-note" value="${esc(s.status_note)}"></label>
+        ${siblings > 1 ? `<label class="check"><input type="checkbox" name="all" id="rs-all" checked>طبّقها على كل أصناف هذا الإرسال (${siblings})</label>` : ''}
+        <button class="btn" type="submit">حفظ</button></form>`, (dl) => {
+      let status = s.status || 'ready';
+      $$('.seg button', dl).forEach((x) => { x.onclick = () => { status = x.dataset.k; $$('.seg button', dl).forEach((y) => y.classList.toggle('on', y === x)); }; });
+      $('#rsF', dl).onsubmit = async (e) => {
+        e.preventDefault();
+        const f = formData(e.target);
+        if (await act($('button[type=submit]', e.target), () => api(`/api/stock/${s.id}/status`, { method: 'PUT', body: { status, note: f.note, all: !!f.all } }), 'تم التحديث')) { dl.close(); refresh(); }
+      };
+    });
+  }; });
 };
+const RET = { ready: ['جاهز للإرسال', 'warn'], sent: ['أُرسل للتاجر', 'info'], settled: ['تمت التسوية', 'good'] };
 
 function lineRow(i) {
   return `<div class="row line">
@@ -855,7 +938,7 @@ function lineRow(i) {
 const RQ = { release: 'فسح لإرجاع منتجات', shortage: 'طلب نواقص' };
 const RS = { pending: ['بانتظار المدير', 'warn'], approved: ['تمت الموافقة', 'info'], rejected: ['مرفوض', 'bad'], done: ['تم التنفيذ', 'good'] };
 PAGES.requests = async () => {
-  const isAdmin = ME.role === 'admin';
+  const isAdmin = ME.manager;
   const status = sessionStorage.getItem('rq-status') || '';
   const d = await api(`/api/requests?status=${status}`);
   const pg = render(`
@@ -906,7 +989,7 @@ PAGES.requests = async () => {
 
 // ------------------------------------------------------------------ tickets
 PAGES.tickets = async () => {
-  const isAdmin = ME.role === 'admin';
+  const isAdmin = ME.manager;
   const st = JSON.parse(sessionStorage.getItem('tk') || 'null') || { status: '', user: '' };
   const [d, staff] = await Promise.all([
     api(`/api/tickets?from=${addDays(today(), -90)}&to=${today()}&status=${st.status}&user_id=${st.user}`),
@@ -919,7 +1002,7 @@ PAGES.tickets = async () => {
         ${isAdmin ? `<select name="user" id="tf-user" aria-label="الموظف">${staffOptions(staff, st.user)}</select><a class="btn ghost" href="/api/export/tickets?from=${addDays(today(), -30)}&to=${today()}">${icon('down')}تصدير</a>` : ''}
       </form></div>
     <div class="grid2">
-      ${isAdmin ? '' : `<section class="panel"><header><h2>تذكرة جديدة</h2></header>
+      ${ME.role === 'admin' ? '' : `<section class="panel"><header><h2>تذكرة جديدة</h2></header>
         <form class="form" id="nt">
           <div class="row">
             <label class="f">النوع<select name="kind" id="nt-kind">${Object.entries(TK).map(([k, v]) => opt(k, v)).join('')}</select></label>
@@ -929,7 +1012,7 @@ PAGES.tickets = async () => {
           <label class="f">التفاصيل<textarea name="body" id="nt-body" rows="6" placeholder="جهّزت 34 طلب، رديت على 20 محادثة، استلمت شحنة المورد..."></textarea></label>
           <button class="btn" type="submit">رفع التذكرة</button>
         </form></section>`}
-      <section class="panel" style="${isAdmin ? 'grid-column:1/-1' : ''}"><header><h2>${d.tickets.length} تذكرة</h2></header>
+      <section class="panel" style="${ME.role === 'admin' ? 'grid-column:1/-1' : ''}"><header><h2>${d.tickets.length} تذكرة</h2></header>
         <div class="list">${d.tickets.map((t) => `<button class="item" type="button" data-t="${t.id}">
           <div class="top"><b>${esc(t.title)}</b><span>${t.priority === 'high' ? pill('عالية', 'bad') : ''} ${pill(...TS[t.status])}</span></div>
           <span class="muted small">#${t.id} · ${isAdmin ? `${esc(t.user_name)} · ` : ''}${TK[t.kind]} · ${fmtDate(t.date)} ${fmtT(t.created_at)}${t.replies ? ` · ${t.replies} رد` : ''}</span>
@@ -944,7 +1027,7 @@ PAGES.tickets = async () => {
 
 async function ticketModal(id) {
   const { ticket: t, replies } = await api(`/api/tickets/${id}`);
-  const isAdmin = ME.role === 'admin';
+  const isAdmin = ME.manager;
   modal(`#${t.id} · ${t.title}`, `
     <div class="row" style="align-items:center">${pill(TK[t.kind], 'plain')} ${pill(...TS[t.status])} <span class="muted small">${esc(t.user_name)} · ${fmtDate(t.date)} ${fmtT(t.created_at)} · أولوية ${PRI[t.priority]}</span></div>
     <div class="thread">
@@ -1059,29 +1142,35 @@ PAGES.reports = async () => {
         <div class="row"><label class="f">اليوم<input type="date" id="r-day" value="${today()}" max="${today()}"></label></div>
         <div class="row"><a class="btn ghost" id="r-print" target="_blank" rel="noopener">${icon('file')}عرض وطباعة</a><a class="btn" id="r-csv">${icon('down')}تنزيل Excel</a></div>
       </section>
+      <section class="panel"><header><h2>التقرير الشهري</h2></header>
+        <p class="muted small">الطلبات والعمليات، البضائع والمرتجعات، تقييم الأداء، الحضور${ME.role === 'admin' ? ' والرواتب' : ''}. يوصلك ملخصه على واتساب أول كل شهر.</p>
+        <div class="row"><label class="f">الشهر<input type="month" id="r-mm" value="${thisMonth()}"></label></div>
+        <a class="btn ghost" id="r-month" target="_blank" rel="noopener">${icon('file')}عرض وطباعة</a>
+      </section>
       <section class="panel"><header><h2>الحضور لفترة</h2></header>
         <div class="row"><label class="f">من<input type="date" id="r-af" value="${addDays(today(), -29)}"></label><label class="f">إلى<input type="date" id="r-at" value="${today()}"></label></div>
         <a class="btn" id="r-att">${icon('down')}تنزيل</a>
       </section>
-      <section class="panel"><header><h2>مسيّر الرواتب الشهري</h2></header>
+${ME.role === 'admin' ? `      <section class="panel"><header><h2>مسيّر الرواتب الشهري</h2></header>
         <div class="row"><label class="f">الشهر<input type="month" id="r-m" value="${thisMonth()}"></label></div>
         <a class="btn" id="r-pay">${icon('down')}تنزيل</a>
-      </section>
+      </section>` : ''}
       <section class="panel"><header><h2>العمليات والتذاكر لفترة</h2></header>
         <div class="row"><label class="f">من<input type="date" id="r-of" value="${addDays(today(), -29)}"></label><label class="f">إلى<input type="date" id="r-ot" value="${today()}"></label></div>
         <div class="row"><a class="btn" id="r-ops">${icon('down')}العمليات والبضائع</a><a class="btn ghost" id="r-tk">${icon('down')}التذاكر</a></div>
       </section>
-      <section class="panel"><header><h2>السلف والنسخ الاحتياطي</h2></header>
-        <p class="muted small">النظام يحفظ نسخة احتياطية تلقائياً كل يوم. تقدر تنزّل نسخة كاملة من قاعدة البيانات لحفظها عندك.</p>
+      ${ME.role === 'admin' ? `      <section class="panel"><header><h2>السلف والنسخ الاحتياطي</h2></header>
+        <p class="muted small">النظام يحفظ نسخة احتياطية تلقائياً كل يوم على السيرفر، ويرسل نسخة لواتساب المدير كل ليلة (من الإعدادات). وتقدر تنزّل نسخة كاملة الآن.</p>
         <div class="row"><a class="btn ghost" href="/api/export/debts">${icon('down')}سجل السلف</a><a class="btn ghost" href="/api/backup">${icon('down')}نسخة احتياطية كاملة</a></div>
-      </section>
+      </section>` : ''}
     </div>`);
   const sync = () => {
     const v = (id) => $(id, pg).value;
     $('#r-print', pg).href = `/report/daily?date=${v('#r-day')}`;
+    $('#r-month', pg).href = `/report/monthly?month=${v('#r-mm')}`;
     $('#r-csv', pg).href = `/api/export/daily?date=${v('#r-day')}`;
     $('#r-att', pg).href = `/api/export/attendance?from=${v('#r-af')}&to=${v('#r-at')}`;
-    $('#r-pay', pg).href = `/api/export/payroll?month=${v('#r-m')}`;
+    if ($('#r-pay', pg)) $('#r-pay', pg).href = `/api/export/payroll?month=${v('#r-m')}`;
     $('#r-ops', pg).href = `/api/export/ops?from=${v('#r-of')}&to=${v('#r-ot')}`;
     $('#r-tk', pg).href = `/api/export/tickets?from=${v('#r-of')}&to=${v('#r-ot')}`;
   };
@@ -1196,7 +1285,12 @@ PAGES.settings = async () => {
         <label class="check"><input type="checkbox" id="n-mgr" ${s.notify.alert_manager ? 'checked' : ''}>تنبيهات للمدير: تأخير، غياب، بصمة مشبوهة، خروج مؤقت، طلب فسح أو نواقص، تذكرة جديدة</label>
         <label class="check"><input type="checkbox" id="n-acc" ${s.notify.staff_account ? 'checked' : ''}>إشعار الموظف عن حسابه: خصم، سلفة أو سداد، رد على تذكرته، قرار على طلبه</label>
         <label class="check"><input type="checkbox" id="n-sum" ${s.notify.daily_summary ? 'checked' : ''}>ملخص يومي للمدير: الحضور والتأخير والغياب، الطلبات حسب القناة، الأرقام اليومية، وما لم يُسجَّل</label>
+        <label class="check"><input type="checkbox" id="n-all" ${s.notify.alert_all ? 'checked' : ''}>كل حركة صغيرة أو كبيرة للمدير: كل بصمة، كل رقم يُسجَّل، كل فاتورة ومرتجع، كل رد على تذكرة</label>
+        <label class="check"><input type="checkbox" id="n-month" ${s.notify.monthly_auto ? 'checked' : ''}>أول كل شهر: التقرير الشهري للمدير، وإعلان موظف الشهر للفريق</label>
+        <div class="row" style="align-items:center"><label class="check" style="flex:2 1 300px"><input type="checkbox" id="n-bak" ${s.notify.daily_backup ? 'checked' : ''}>نسخة احتياطية من قاعدة البيانات لواتساب المدير كل ليلة</label>
+          <label class="f" style="flex:0 1 160px">وقت النسخة<input type="time" id="n-bak-t" value="${s.notify.backup_time || '23:30'}"></label></div>
       </div>
+      <div class="msg small"><b>الرد من واتساب:</b> لما يوصلك طلب فسح أو نواقص أو إجازة، رد من جوالك: <b>موافق ف12</b> أو <b>رفض ف12 السبب</b> أو <b>تم ف12</b>، وللإجازات <b>موافق ج3</b>. واكتب <b>طلبات</b> لعرض كل ما ينتظر ردك.</div>
       <div class="row"><button type="button" class="btn ghost" id="n-test" style="flex:0 0 auto">إرسال رسالة تجربة لجوالي</button><button type="button" class="btn ghost" id="n-test-sum" style="flex:0 0 auto">أرسل ملخص اليوم الآن</button><button type="button" class="btn ghost" id="n-preview" style="flex:0 0 auto">معاينة شكل الرسائل</button><a class="link" href="#/notifications" style="flex:0 0 auto;align-self:center">سجل الإشعارات</a></div>
       <p class="muted small">أرقام الموظفين تُضاف من صفحة الموظفين. احفظ الإعدادات قبل التجربة.</p>
     </section>
@@ -1254,10 +1348,182 @@ PAGES.settings = async () => {
         manager_phone: $('#n-phone', pg).value.trim(), app_url: $('#n-url', pg).value.trim(), summary_time: $('#n-time', pg).value, remind_after_minutes: $('#n-after', pg).value,
         shift_alerts: $('#n-alarm', pg).checked, alert_before_minutes: $('#n-before', pg).value,
         remind_staff: $('#n-staff', pg).checked, alert_manager: $('#n-mgr', pg).checked, staff_account: $('#n-acc', pg).checked, daily_summary: $('#n-sum', pg).checked,
+        alert_all: $('#n-all', pg).checked, monthly_auto: $('#n-month', pg).checked, daily_backup: $('#n-bak', pg).checked, backup_time: $('#n-bak-t', pg).value,
       },
     };
     if (await act(e.target, () => api('/api/settings', { method: 'PUT', body }), 'تم حفظ الإعدادات')) { staffCache = null; boot(); }
   };
+};
+
+// ------------------------------------------------------------------ leave & permission requests
+const LK = { leave: 'إجازة', sick: 'إجازة مرضية', permission: 'استئذان بالساعات' };
+const LS = { pending: ['بانتظار المدير', 'warn'], approved: ['تمت الموافقة', 'good'], rejected: ['مرفوض', 'bad'] };
+const leaveWhen = (q) => (q.kind === 'permission' ? `${fmtDate(q.from_date)} · ${q.from_time} – ${q.to_time}`
+  : q.from_date === q.to_date ? fmtDate(q.from_date) : `${fmtDate(q.from_date)} ← ${fmtDate(q.to_date)}`);
+PAGES.leaves = async () => {
+  const mgr = ME.manager;
+  const status = sessionStorage.getItem('lv-status') || '';
+  const d = await api(`/api/leaves?status=${status}`);
+  const own = ME.role !== 'admin';
+  const pg = render(`
+    <div class="topline"><h1>${mgr ? 'الإجازات والاستئذان' : 'إجازاتي'}</h1><div class="tools">
+      <select id="lv-st" aria-label="الحالة">${opt('', 'كل الحالات', status)}${Object.entries(LS).map(([k, v]) => opt(k, v[0], status)).join('')}</select></div></div>
+    <div class="grid2">
+      ${own ? `<section class="panel"><header><h2>طلب جديد</h2></header>
+        <form class="form" id="lvF">
+          <div class="seg" role="radiogroup" aria-label="نوع الطلب">${Object.entries(LK).map(([k, v], i) => `<button type="button" data-k="${k}" class="${i ? '' : 'on'}">${v}</button>`).join('')}</div>
+          <input type="hidden" name="kind" id="lv-kind" value="leave">
+          <div class="row">
+            <label class="f" id="lv-from-l">من يوم<input type="date" name="from_date" id="lv-from" value="${addDays(today(), 1)}" min="${addDays(today(), -7)}" required></label>
+            <label class="f" id="lv-to-l">إلى يوم<input type="date" name="to_date" id="lv-to" value="${addDays(today(), 1)}" min="${addDays(today(), -7)}"></label>
+            <label class="f" id="lv-ft-l" hidden>من الساعة<input type="time" name="from_time" id="lv-ft" value="10:00"></label>
+            <label class="f" id="lv-tt-l" hidden>إلى الساعة<input type="time" name="to_time" id="lv-tt" value="11:00"></label>
+          </div>
+          <label class="f">السبب<textarea name="reason" id="lv-reason" required maxlength="500" placeholder="مثال: مراجعة مستشفى، ظرف عائلي، سفر"></textarea></label>
+          <button class="btn" type="submit">رفع الطلب للمدير</button>
+          <p class="muted small">بعد الموافقة ما يُحسب عليك غياب ولا تأخير في أيام الإجازة أو وقت الاستئذان، ويوصلك القرار على واتساب.</p>
+        </form></section>` : ''}
+      <section class="panel" style="${own ? '' : 'grid-column:1/-1'}"><header><h2>${d.leaves.length} طلب</h2></header>
+        ${table(['#', ...(mgr ? ['الموظف'] : []), 'النوع', 'الموعد', 'السبب', 'الحالة', 'الرد'],
+          d.leaves.map((q) => `<tr><td>${q.id}</td>${mgr ? `<td><b>${esc(q.user_name)}</b></td>` : ''}<td>${LK[q.kind]}</td><td class="nowrap">${leaveWhen(q)}</td>
+            <td class="wrap">${esc(q.reason)}</td><td class="nowrap">${pill(...LS[q.status])}${mgr && q.user_id !== ME.id ? `<div class="acts"><button class="btn sm" data-ok="${q.id}">موافقة</button><button class="btn sm ghost" data-no="${q.id}">رفض</button></div>` : ''}</td><td class="wrap">${esc(q.response) || '—'}</td></tr>`),
+          { empty: 'لا توجد طلبات' })}
+        ${mgr ? '<p class="muted small">تقدر توافق من واتساب مباشرة: رد على رسالة الطلب بـ <b>موافق ج12</b> أو <b>رفض ج12 السبب</b>.</p>' : ''}
+      </section>
+    </div>`);
+  $('#lv-st', pg).onchange = (e) => { sessionStorage.setItem('lv-status', e.target.value); refresh(); };
+  const f = $('#lvF', pg);
+  if (f) {
+    $$('.seg button', pg).forEach((b) => { b.onclick = () => {
+      $$('.seg button', pg).forEach((x) => x.classList.toggle('on', x === b));
+      $('#lv-kind', pg).value = b.dataset.k;
+      const perm = b.dataset.k === 'permission';
+      $('#lv-to-l', pg).hidden = perm; $('#lv-ft-l', pg).hidden = !perm; $('#lv-tt-l', pg).hidden = !perm;
+      $('#lv-from-l', pg).firstChild.textContent = perm ? 'اليوم' : 'من يوم';
+    }; });
+    $('#lv-from', pg).onchange = (e) => { if ($('#lv-to', pg).value < e.target.value) $('#lv-to', pg).value = e.target.value; };
+    f.onsubmit = async (e) => { e.preventDefault(); if (await act($('button[type=submit]', e.target), () => api('/api/leaves', { method: 'POST', body: formData(e.target) }), 'تم رفع الطلب')) refresh(); };
+  }
+  const decide = (id, status) => {
+    const q = d.leaves.find((x) => x.id === id);
+    modal(`${status === 'approved' ? 'موافقة على' : 'رفض'} ${LK[q.kind]} · ${q.user_name}`, `<form class="form" id="lvD">
+        <p>${leaveWhen(q)}</p><div class="msg">${esc(q.reason)}</div>
+        <label class="f">رد للموظف (اختياري)<textarea name="response" id="lvd-resp">${esc(q.response)}</textarea></label>
+        <button class="btn" type="submit">${status === 'approved' ? 'اعتماد الموافقة' : 'تأكيد الرفض'}</button></form>`, (dl) => {
+      $('#lvD', dl).onsubmit = async (e) => {
+        e.preventDefault();
+        if (await act($('button', e.target), () => api(`/api/leaves/${id}`, { method: 'PUT', body: { status, response: formData(e.target).response } }), 'تم وإرسال إشعار للموظف')) { dl.close(); refresh(); }
+      };
+    });
+  };
+  $$('[data-ok]', pg).forEach((b) => { b.onclick = () => decide(+b.dataset.ok, 'approved'); });
+  $$('[data-no]', pg).forEach((b) => { b.onclick = () => decide(+b.dataset.no, 'rejected'); });
+};
+
+// ------------------------------------------------------------------ performance board
+const ring = (v, size = 64) => {
+  const r = size / 2 - 5;
+  const c = 2 * Math.PI * r;
+  const val = v ?? 0;
+  const tone = v === null ? 'var(--line-2)' : val >= 85 ? 'var(--good)' : val >= 65 ? 'var(--warn)' : 'var(--bad)';
+  return `<svg class="ring" viewBox="0 0 ${size} ${size}" width="${size}" height="${size}" aria-hidden="true">
+    <circle cx="${size / 2}" cy="${size / 2}" r="${r}" fill="none" stroke="var(--sunk)" stroke-width="6"/>
+    <circle cx="${size / 2}" cy="${size / 2}" r="${r}" fill="none" stroke="${tone}" stroke-width="6" stroke-linecap="round" stroke-dasharray="${(c * val) / 100} ${c}" transform="rotate(-90 ${size / 2} ${size / 2})"/>
+    <text x="50%" y="54%" text-anchor="middle" dominant-baseline="middle">${v ?? '—'}</text></svg>`;
+};
+PAGES.performance = async () => {
+  const month = sessionStorage.getItem('perf-month') || thisMonth();
+  const d = await api(`/api/performance?month=${month}`);
+  const meter = (label, v, hint) => `<div class="meter"><span>${label}</span><div class="bar"><i style="width:${v ?? 0}%"></i></div><b>${v ?? '—'}</b>${hint ? `<small class="muted">${hint}</small>` : ''}</div>`;
+  const pg = render(`
+    <div class="topline"><div><h1>لوحة الأداء</h1><p class="muted small">التقييم = 70% التزام + 30% تسجيل يومي. الالتزام: نسبة الحضور، ناقص نقطة لكل 10 دقائق تأخير ولكل 15 دقيقة خروج.</p></div>
+      <div class="tools"><input type="month" id="pf-m" value="${month}" aria-label="الشهر">
+      <a class="btn ghost" href="/report/monthly?month=${month}" target="_blank" rel="noopener">${icon('file')}التقرير الشهري</a>
+      ${ME.role === 'admin' ? `<button class="btn" id="pf-award" type="button">${d.award ? 'إعادة إعلان موظف الشهر' : 'إعلان موظف الشهر'}</button>` : ''}</div></div>
+    ${d.award ? `<section class="panel award"><b>🏆 موظف شهر ${month}: ${esc(d.award.name)}</b><span>${d.award.score} من 100 · ${esc(d.award.details)}</span></section>` : ''}
+    <div class="perf">${d.rows.map((r) => `<section class="panel pcard ${r.rank === 1 && r.score !== null ? 'top' : ''}">
+      <div class="phead">${ring(r.score)}<div><b>${r.rank ? `#${r.rank} · ` : ''}${esc(r.name)}</b>
+        <span class="muted small">${r.change === null ? 'لا توجد مقارنة' : r.change > 0 ? `<span class="up">▲ ${r.change}</span> عن الشهر السابق` : r.change < 0 ? `<span class="down">▼ ${-r.change}</span> عن الشهر السابق` : 'نفس الشهر السابق'}</span></div></div>
+      ${meter('الالتزام', r.commitment, `حضور ${r.presentDays}/${r.expectedDays} · تأخير ${int(r.lateMinutes)} د · خروج ${int(r.exitMinutes)} د`)}
+      ${r.recording !== null ? meter('التسجيل اليومي', r.recording, `سجّل في ${r.recordDays} يوم`) : ''}
+      ${r.metrics.length ? `<div class="chips">${r.metrics.map((m) => `<span class="chip"><b>${int(m.total)}</b> ${esc(m.name)}</span>`).join('')}</div>` : ''}
+      <p class="muted small">${int(r.achievements)} إنجاز · ${int(r.requests)} طلب فسح أو نواقص</p>
+      ${ME.role === 'admin' ? `<button class="link" type="button" data-pick="${r.userId}">اختره موظف الشهر</button>` : ''}
+    </section>`).join('')}</div>`);
+  $('#pf-m', pg).onchange = (e) => { sessionStorage.setItem('perf-month', e.target.value || thisMonth()); refresh(); };
+  const announce = async (btn, userId = null) => {
+    if (!confirm('يوصل الإعلان لكل الفريق على واتساب. متأكد؟')) return;
+    const r = await act(btn, () => api('/api/awards', { method: 'POST', body: { month, user_id: userId } }));
+    if (r) { toast(`تم إعلان ${r.award.name} موظف الشهر`); refresh(); }
+  };
+  const aw = $('#pf-award', pg);
+  if (aw) aw.onclick = () => announce(aw);
+  $$('[data-pick]', pg).forEach((b) => { b.onclick = () => announce(b, +b.dataset.pick); });
+};
+
+// ------------------------------------------------------------------ analytics: trends
+/** Daily bars with a 7-day average line. Time runs left → right; hover a bar for its value. */
+function trendChart(days, values, { unit = '', fmt = int, avg = true, tone = 'ink', small = false } = {}) {
+  if (innerWidth < 640) small = true;
+  const W = small ? 380 : 720; const H = small ? 190 : 200; const pad = { l: 40, r: 10, t: 12, b: 26 };
+  const vals = values.map((v) => (v === null || v === undefined ? null : Number(v)));
+  const max = Math.max(1, ...vals.filter((v) => v !== null));
+  const nice = (() => { const p = 10 ** Math.floor(Math.log10(max)); return Math.ceil(max / p) * p; })();
+  const iw = W - pad.l - pad.r; const ih = H - pad.t - pad.b;
+  const bw = iw / days.length;
+  const y = (v) => pad.t + ih - (v / nice) * ih;
+  const x = (i) => pad.l + i * bw + bw / 2;
+  const grid = [0, 0.5, 1].map((f) => `<line x1="${pad.l}" x2="${W - pad.r}" y1="${y(nice * f)}" y2="${y(nice * f)}" class="gl"/><text x="${pad.l - 6}" y="${y(nice * f) + 4}" text-anchor="end" class="ax">${fmt(nice * f)}</text>`).join('');
+  const bars = vals.map((v, i) => (v === null ? '' : `<rect x="${x(i) - Math.max(1, bw * 0.34)}" y="${y(v)}" width="${Math.max(2, bw * 0.68)}" height="${Math.max(0, pad.t + ih - y(v))}" rx="${Math.min(3, bw / 4)}" class="b ${tone}"><title>${fmtDate(days[i])}: ${fmt(v)}${unit}</title></rect>`)).join('');
+  let line = '';
+  if (avg && days.length >= 10) {
+    const pts = vals.map((_, i) => {
+      const win = vals.slice(Math.max(0, i - 6), i + 1).filter((v) => v !== null);
+      return win.length ? `${x(i).toFixed(1)},${y(win.reduce((a, b) => a + b, 0) / win.length).toFixed(1)}` : null;
+    }).filter(Boolean);
+    line = `<polyline points="${pts.join(' ')}" class="avg"/>`;
+  }
+  const step = Math.ceil(days.length / 8);
+  const labels = days.map((d, i) => ((i % step === 0 && days.length - 1 - i >= step / 2) || i === days.length - 1 ? `<text x="${x(i)}" y="${H - 6}" text-anchor="middle" class="ax">${d.slice(8)}/${d.slice(5, 7)}</text>` : '')).join('');
+  return `<svg class="chart" viewBox="0 0 ${W} ${H}" dir="ltr" role="img">${grid}${bars}${line}${labels}</svg>`;
+}
+function statLine(days, values, fmt = int, unit = '') {
+  const v = values.map((n) => n ?? 0);
+  const total = v.reduce((a, b) => a + b, 0);
+  const recorded = values.filter((n) => n !== null && n !== undefined).length || 1;
+  const best = v.indexOf(Math.max(...v));
+  return `<p class="stats"><span>الإجمالي <b>${fmt(total)}${unit}</b></span><span>المتوسط اليومي <b>${fmt(Math.round((total / recorded) * 10) / 10)}${unit}</b></span>${total ? `<span>أعلى يوم <b>${fmtDate(days[best])}: ${fmt(v[best])}${unit}</b></span>` : ''}</p>`;
+}
+PAGES.analytics = async () => {
+  const span = +(sessionStorage.getItem('an-span') || 30);
+  const metricKey = sessionStorage.getItem('an-metric') || '';
+  const d = await api(`/api/analytics?from=${addDays(today(), -(span - 1))}&to=${today()}`);
+  const days = d.days.map((x) => x.date);
+  const col = (k) => d.days.map((x) => x[k]);
+  const mk = d.metrics.find((m) => m.key === metricKey) ? metricKey : d.metrics[0]?.key;
+  const chTotals = d.channels.map((c) => ({ ...c, n: d.days.reduce((t, x) => t + x.channels[c.key], 0) })).sort((a, b) => b.n - a.n);
+  const chMax = Math.max(1, ...chTotals.map((c) => c.n));
+  const rate = d.days.map((x) => (x.scheduled ? Math.round((x.present / x.scheduled) * 100) : null));
+  const pg = render(`
+    <div class="topline"><div><h1>المؤشرات</h1><p class="muted small">الاتجاهات اليومية. الخط هو متوسط آخر 7 أيام.</p></div>
+      <div class="seg" role="tablist">${[14, 30, 90].map((n) => `<button type="button" data-span="${n}" class="${n === span ? 'on' : ''}">${n} يوم</button>`).join('')}</div></div>
+    <section class="panel"><header><h2>الطلبات اليومية</h2></header>${statLine(days, col('orders'))}${trendChart(days, col('orders'), { unit: ' طلب' })}</section>
+    <div class="grid2">
+      <section class="panel"><header><h2>المبيعات (ر.س)</h2></header>${statLine(days, col('amount'), money)}${trendChart(days, col('amount'), { fmt: (n) => (n >= 1000 ? `${Math.round(n / 100) / 10}k` : int(n)), tone: 'violet', small: true })}</section>
+      <section class="panel"><header><h2>حصة القنوات</h2><span class="muted small">آخر ${span} يوم</span></header>
+        <div class="hbars">${chTotals.map((c) => `<div><span>${esc(c.name)}</span><div class="bar"><i style="width:${(c.n / chMax) * 100}%"></i></div><b>${int(c.n)}</b></div>`).join('')}</div></section>
+    </div>
+    <section class="panel"><header><h2>الأرقام اليومية</h2>
+      <select id="an-m" aria-label="البند">${d.metrics.map((m) => opt(m.key, m.name, mk)).join('')}</select></header>
+      ${mk ? statLine(days, d.days.map((x) => x.metrics[mk])) + trendChart(days, d.days.map((x) => x.metrics[mk]), { tone: 'teal' }) : '<p class="muted">لا توجد بنود</p>'}</section>
+    <div class="grid2">
+      <section class="panel"><header><h2>دقائق التأخير للفريق</h2></header>${statLine(days, col('lateMinutes'), int, ' د')}${trendChart(days, col('lateMinutes'), { unit: ' دقيقة', tone: 'warn', small: true })}</section>
+      <section class="panel"><header><h2>نسبة الحضور %</h2></header>${trendChart(days, rate, { unit: '%', tone: 'good', avg: false, small: true })}
+        <p class="muted small">الحاضرون ÷ المجدولون في ذلك اليوم (بدون المعذورين).</p></section>
+    </div>`);
+  $$('[data-span]', pg).forEach((b) => { b.onclick = () => { sessionStorage.setItem('an-span', b.dataset.span); refresh(); }; });
+  const sel = $('#an-m', pg);
+  if (sel) sel.onchange = () => { sessionStorage.setItem('an-metric', sel.value); refresh(); };
 };
 
 startInk();

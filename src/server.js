@@ -449,10 +449,11 @@ export function createApp(db) {
     const rep = dailyReport(db, date);
     const openTickets = db.prepare("SELECT COUNT(*) n FROM tickets WHERE status != 'closed'").get().n;
     const pendingRequests = db.prepare("SELECT COUNT(*) n FROM requests WHERE status = 'pending'").get().n;
+    const pendingLeaves = db.prepare("SELECT COUNT(*) n FROM leave_requests WHERE status = 'pending'").get().n;
     const money = user.role === 'admin';
     return {
       ...rep, attendance: hideMoney(user, rep.attendance), deductions: money ? rep.deductions : [], debts: money ? rep.debts : [],
-      openTickets, pendingRequests, flagLabels: FLAG_LABELS, now: Date.now(),
+      openTickets, pendingRequests, pendingLeaves, flagLabels: FLAG_LABELS, now: Date.now(),
     };
   }, { auth: true });
   r.get('/api/attendance', ({ url, user }) => {
@@ -643,6 +644,10 @@ export function createApp(db) {
   }, { auth: true });
 
   // ------------------------------------------------------------ manager: staff & settings
+  r.get('/api/staff', ({ user }) => {
+    requireManager(user);
+    return { users: db.prepare("SELECT id, name, active FROM users WHERE role = 'employee' ORDER BY id").all().map((u) => ({ ...u, active: !!u.active })) };
+  }, { auth: true });
   r.get('/api/users', ({ user }) => {
     requireAdmin(user);
     const st = getSettings(db);
