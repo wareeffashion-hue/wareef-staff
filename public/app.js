@@ -191,7 +191,7 @@ if ('serviceWorker' in navigator) {
 }
 
 // ------------------------------------------------------------------ in-app alarm
-// When the app is open, an urgent alert rings like an alarm clock (the «WAREEF» tone + vibration) until stopped.
+// When the app is open, an urgent alert rings like an alarm clock (the alarm tone + vibration) until stopped.
 // Browsers only allow sound after the person has touched the page once, so the audio is unlocked on first tap.
 const ALARM = {
   audio: null,
