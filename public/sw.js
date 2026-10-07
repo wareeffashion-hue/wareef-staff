@@ -6,7 +6,10 @@ self.addEventListener('push', (e) => {
   let d = {};
   try { d = e.data ? e.data.json() : {}; } catch { d = { title: 'وريف', body: e.data ? e.data.text() : '' }; }
   const urgent = !!d.urgent;
-  e.waitUntil(self.registration.showNotification(d.title || 'وريف · فريق العمل', {
+  e.waitUntil((async () => {
+    // an open app rings out loud itself; the notification sound is up to the phone's settings
+    if (urgent) for (const w of await self.clients.matchAll({ type: 'window', includeUncontrolled: true })) w.postMessage({ type: 'alarm', title: d.title, body: d.body, url: d.url });
+    await self.registration.showNotification(d.title || 'وريف · فريق العمل', {
     body: d.body || '',
     icon: '/img/icon-192.png',
     badge: '/img/badge-96.png',
@@ -17,8 +20,10 @@ self.addEventListener('push', (e) => {
     dir: 'rtl',
     lang: 'ar',
     timestamp: Date.now(),
+    silent: false,
     data: { url: d.url || '/' },
-  }));
+  });
+  })());
 });
 
 self.addEventListener('notificationclick', (e) => {

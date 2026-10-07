@@ -185,7 +185,54 @@ const PUSH = {
   /** After login on a phone that already allowed notifications, attach the device to this account. */
   async refresh() { try { if (PUSH.supported() && Notification.permission === 'granted') { const sub = await PUSH.sub(); if (sub) await api('/api/push/subscribe', { method: 'POST', body: { subscription: sub.toJSON() } }); } } catch {} },
 };
-if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js').catch(() => {});
+  navigator.serviceWorker.addEventListener('message', (e) => { if (e.data?.type === 'alarm') ALARM.ring(e.data); });
+}
+
+// ------------------------------------------------------------------ in-app alarm
+// When the app is open, an urgent alert rings like an alarm clock (sound + vibration) until stopped.
+// Browsers only allow sound after the person has touched the page once, so the audio is unlocked on first tap.
+const ALARM = {
+  ctx: null,
+  timer: null,
+  unlock() {
+    try {
+      ALARM.ctx ||= new (window.AudioContext || window.webkitAudioContext)();
+      if (ALARM.ctx.state === 'suspended') ALARM.ctx.resume();
+    } catch {}
+  },
+  beep(t, f, len) {
+    const c = ALARM.ctx; const o = c.createOscillator(); const g = c.createGain();
+    o.type = 'square'; o.frequency.value = f;
+    g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(0.35, t + 0.01); g.gain.setValueAtTime(0.35, t + len - 0.03); g.gain.linearRampToValueAtTime(0, t + len);
+    o.connect(g).connect(c.destination); o.start(t); o.stop(t + len);
+  },
+  ring({ title = 'منبّه الدوام', body = '', url = '' } = {}) {
+    ALARM.stop();
+    ALARM.unlock();
+    const box = document.createElement('div');
+    box.className = 'alarm';
+    box.setAttribute('role', 'alertdialog');
+    box.innerHTML = `<div class="alarm-card"><div class="alarm-bell">🔔</div><h2>${esc(title)}</h2><p>${esc(body).replace(/\n/g, '<br>')}</p><button class="btn" type="button">إيقاف المنبّه</button></div>`;
+    document.body.append(box);
+    $('button', box).onclick = () => { ALARM.stop(); if (url && url !== '/') location.hash = `#${url}`; };
+    let n = 0;
+    const cycle = () => {
+      if (ALARM.ctx?.state === 'running') { const t = ALARM.ctx.currentTime; for (let i = 0; i < 4; i++) { ALARM.beep(t + i * 0.25, 1046, 0.16); ALARM.beep(t + i * 0.25 + 0.08, 1318, 0.08); } }
+      navigator.vibrate?.([600, 200, 600, 200, 600]);
+      if (++n >= 30) ALARM.stop(); // about a minute
+    };
+    cycle();
+    ALARM.timer = setInterval(cycle, 2000);
+  },
+  stop() {
+    clearInterval(ALARM.timer); ALARM.timer = null;
+    navigator.vibrate?.(0);
+    $$('.alarm').forEach((el) => el.remove());
+  },
+};
+document.addEventListener('pointerdown', ALARM.unlock, { passive: true });
 
 // ------------------------------------------------------------------ boot & shell
 async function boot() {
@@ -616,6 +663,16 @@ PAGES.account = async () => {
       <p class="muted small">منبّهات الدوام وكل إشعارات النظام تطلع على شاشة هذا الجوال مباشرة بصوت واهتزاز، حتى لو كان مقفل. فعّلها على كل جوال تستخدمه.</p>
       <div class="row"><button class="btn" type="button" id="p-on">تفعيل على هذا الجوال</button><button class="btn ghost" type="button" id="p-test">إرسال تنبيه تجربة</button><button class="link bad" type="button" id="p-off">إيقاف</button></div>
       ${PUSH.ios() && !PUSH.standalone() ? '<p class="muted small">على الآيفون: من Safari اضغط مشاركة ← «إضافة إلى الشاشة الرئيسية»، وافتح النظام من الأيقونة الجديدة، ثم فعّل من هنا.</p>' : ''}
+      <details class="howto"><summary>التنبيه يطلع بدون صوت أو اهتزاز؟</summary>
+        <p class="muted small">صوت الإشعار واهتزازه يتحكم فيهما الجوال نفسه، فعّلهما مرة وحدة:</p>
+        <ol class="small">
+          <li>اضغط مطوّلاً على إشعار وريف لما يوصلك ← <b>الإعدادات</b> (أو: إعدادات الجوال ← التطبيقات ← <b>Chrome</b>، أو تطبيق <b>وريف</b> إذا أضفته للشاشة الرئيسية ← الإشعارات).</li>
+          <li>افتح فئة الموقع <b>wareef</b> (تحت «المواقع» أو «Sites»).</li>
+          <li>اختر <b>تنبيه / Alerting</b> بدل «صامت»، وفعّل <b>الصوت</b> و<b>الاهتزاز</b> و<b>الإظهار على الشاشة</b>، واختر نغمة واضحة.</li>
+          <li>تأكد أن الجوال مو على الصامت أو «عدم الإزعاج»، وأن توفير البطارية ما يقيّد Chrome.</li>
+        </ol>
+        <p class="muted small">ولما يكون النظام مفتوح، المنبّه يرنّ ويهزّ بنفسه لين تضغط «إيقاف المنبّه». جرّبه بزر «إرسال تنبيه تجربة».</p>
+      </details>
     </section>
     <div style="max-width:520px"><button class="btn ghost" type="button" data-logout style="width:100%">${icon('out')}تسجيل الخروج</button></div>`);
   const ps = $('#ps', pg);

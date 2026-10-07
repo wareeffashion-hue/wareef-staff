@@ -504,3 +504,18 @@ body::after { content: ""; position: fixed; inset: 0; z-index: 0; pointer-events
   @keyframes breathe { 50% { box-shadow: 0 10px 34px -8px rgb(171 134 255 / 75%); } }
   .punch .actions .btn:not(.ghost):hover { animation: none; }
 }
+
+/* ---------- in-app alarm */
+.alarm { position: fixed; inset: 0; z-index: 90; display: grid; place-items: center; padding: 20px; background: rgb(18 13 31 / 62%); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); }
+.alarm-card { width: min(380px, 100%); background: var(--surface-solid); border-radius: 22px; padding: 28px 22px; display: grid; gap: 12px; justify-items: center; text-align: center;
+  border: 2px solid transparent; background: linear-gradient(var(--surface-solid), var(--surface-solid)) padding-box, var(--foil) border-box; box-shadow: 0 30px 80px -20px rgb(123 85 240 / 60%); }
+.alarm-card p { color: var(--ink-2); white-space: normal; }
+.alarm-card .btn { width: 100%; min-height: 56px; font-size: 1.1rem; }
+.alarm-bell { font-size: 3.4rem; line-height: 1; }
+@media (prefers-reduced-motion: no-preference) {
+  .alarm-card { animation: dlg-in .42s var(--spring); }
+  .alarm-bell { animation: bell 1s ease-in-out infinite; transform-origin: 50% 10%; }
+  @keyframes bell { 0%, 50%, 100% { transform: rotate(0); } 10%, 30% { transform: rotate(-18deg); } 20%, 40% { transform: rotate(18deg); } }
+}
+.howto summary { cursor: pointer; font-weight: 500; font-size: .9rem; }
+.howto ol { margin: 8px 0; padding-inline-start: 20px; display: grid; gap: 4px; }
