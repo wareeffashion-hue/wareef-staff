@@ -5,7 +5,7 @@ import { audit } from './db.js';
 import { HttpError } from './http.js';
 import { DAY } from './config.js';
 import { localDate, localTime } from './time.js';
-import { appLink, normalizePhone, notifyActivity, notifyEmployee, notifyManager } from './notify.js';
+import { appLink, normalizePhone, notifyActivity, notifyManager, queue } from './notify.js';
 import * as msg from './messages.js';
 
 export const EX_KINDS = { exchange: 'استبدال', refund: 'استرجاع' };
@@ -16,6 +16,13 @@ export const normTrack = (s) => String(s ?? '').replace(/[\u0000-\u001f\s\-_]/g,
 const dm = (d) => `${d.slice(8)}/${d.slice(5, 7)}`;
 const daysSince = (date, now) => Math.max(0, Math.round((Date.parse(`${localDate(now)}T00:00:00Z`) - Date.parse(`${date}T00:00:00Z`)) / DAY));
 const text = (v, max) => String(v ?? '').trim().slice(0, max);
+
+/** Work alerts for customer service: WhatsApp + phone notification, whatever the "employee account" switch says. */
+function toStaff(db, userId, kind, body, key) {
+  const u = db.prepare('SELECT phone FROM users WHERE id = ? AND active = 1').get(userId);
+  if (!u) return false;
+  return queue(db, { to: u.phone || '', userId, kind, body, key });
+}
 
 const SELECT = `SELECT e.*, c.name AS created_name, r.name AS received_name FROM exchanges e
   LEFT JOIN users c ON c.id = e.created_by LEFT JOIN users r ON r.id = e.received_by`;
@@ -31,7 +38,7 @@ function receive(db, e, scan, by, now) {
     .run(scan?.ts ?? now, scan?.id ?? null, by?.id ?? null, e.id);
   const days = daysSince(e.date, scan?.ts ?? now);
   const info = { tracking: e.tracking, order: e.order_no, customer: e.customer, kind: EX_KINDS[e.kind], by: by?.name || '', days };
-  if (e.created_by) notifyEmployee(db, e.created_by, 'exchange_arrived', msg.exchangeArrived({ ...info, link: appLink(db) }), `exchange_arrived:${e.id}:${scan?.id ?? 'manual'}`);
+  if (e.created_by) toStaff(db, e.created_by, 'exchange_arrived', msg.exchangeArrived({ ...info, link: appLink(db) }), `exchange_arrived:${e.id}:${scan?.id ?? 'manual'}`);
   notifyActivity(db, 'exchange_arrived', msg.mgrExchangeArrived(info), `exchange_arrived:${e.id}:${scan?.id ?? 'manual'}:mgr`);
 }
 
@@ -128,7 +135,7 @@ export function exchangeTick(db, now = Date.now()) {
   for (const e of rows) {
     db.prepare('UPDATE exchanges SET due_notified_at = ? WHERE id = ?').run(now, e.id);
     const info = { tracking: e.tracking, order: e.order_no, customer: e.customer, phone: e.phone, kind: EX_KINDS[e.kind], days: daysSince(e.date, now), date: dm(e.date) };
-    if (e.created_by) notifyEmployee(db, e.created_by, 'exchange_due', msg.exchangeDue({ ...info, link: appLink(db) }), `exchange_due:${e.id}`);
+    if (e.created_by) toStaff(db, e.created_by, 'exchange_due', msg.exchangeDue({ ...info, link: appLink(db) }), `exchange_due:${e.id}`);
     notifyManager(db, 'exchange_due', msg.mgrExchangeDue({ ...info, name: e.created_name || '' }), `exchange_due:${e.id}:mgr`);
   }
   return rows.length;

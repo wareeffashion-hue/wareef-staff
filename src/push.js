@@ -38,7 +38,7 @@ export function cardToPush(text) {
   return { title, body };
 }
 
-const URGENT = new Set(['alarm_start', 'alarm_break', 'alarm_end', 'remind_in', 'remind_out', 'exit_over', 'exit_request', 'leave_status']);
+const URGENT = new Set(['alarm_start', 'alarm_break', 'alarm_end', 'remind_in', 'remind_out', 'exit_over', 'exit_request', 'leave_status', 'exchange_due']);
 const ROUTE = { alarm_start: '#/today', alarm_break: '#/today', alarm_end: '#/today', remind_in: '#/today', remind_out: '#/today', exit_over: '#/today',
   leave_status: '#/leaves', request_status: '#/requests', ticket_reply: '#/tickets', deduction: '#/mine', debt_loan: '#/mine', debt_repayment: '#/mine',
   payslip: '#/mine', award: '#/mine', exchange_arrived: '#/exchanges', exchange_due: '#/exchanges', exit_request: '#/dashboard', leave_request: '#/leaves', request: '#/requests', ticket: '#/tickets', summary: '#/dashboard' };

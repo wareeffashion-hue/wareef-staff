@@ -6,7 +6,7 @@ process.env.ADMIN_PASSWORD = 'manager123';
 const { openDb } = await import('../src/db.js');
 const { bootstrap } = await import('../src/auth.js');
 const { createApp } = await import('../src/server.js');
-const { saveSettings } = await import('../src/settings.js');
+const { saveSettings, getSettings } = await import('../src/settings.js');
 const { localDate, addDays, at } = await import('../src/time.js');
 const { parseCommand, handleIncoming } = await import('../src/commands.js');
 const { monthlyTick, monthlySummary } = await import('../src/monthly.js');
@@ -382,6 +382,13 @@ test('exchanges: customer service registers the return, the warehouse scan match
   const ab = client();
   assert.equal((await ab('POST', '/api/login', { username: 'abdullah', password: 'abdullah-pass1' })).status, 200);
   await admin('PUT', `/api/users/${id('monther')}`, { perms: ['exchanges', 'm:pending_issues'] });
+  // these are work alerts: they reach Monther on WhatsApp and on his phone even with the "employee account" switch off
+  saveSettings(db, { notify: { ...getSettings(db).notify, staff_account: false } });
+  const { setPushSender } = await import('../src/push.js');
+  const pushed = [];
+  setPushSender(async (sub, payload) => { pushed.push({ to: sub.endpoint, ...JSON.parse(payload) }); });
+  await monther('POST', '/api/push/subscribe', { subscription: { endpoint: 'https://fcm.googleapis.com/fcm/send/monther-phone', keys: { p256dh: 'B', auth: 'a' } } });
+  const toMonther = (re) => pushed.filter((p) => p.to.endsWith('monther-phone') && re.test(p.title));
   assert.equal((await ali('POST', '/api/exchanges', { tracking: 'ARX-9001' })).status, 403);
   assert.equal((await ab('POST', '/api/exchanges', { tracking: 'ARX-9001' })).status, 403, 'the warehouse reads, does not register');
   const a = await monther('POST', '/api/exchanges', { tracking: ' arx-9001 ', kind: 'exchange', order_no: '5521', customer: 'سارة', phone: '0551234567' });
@@ -396,6 +403,9 @@ test('exchanges: customer service registers the return, the warehouse scan match
   assert.ok(scan.body.exchange);
   assert.match(scan.body.note, /إرجاع ينتظره منذر/);
   assert.match(notes("kind = 'exchange_arrived' AND user_id = ?", id('monther')).at(-1).body, /وصلت شحنة الإرجاع/);
+  assert.equal(notes("kind = 'exchange_arrived' AND user_id = ?", id('monther')).at(-1).to_phone, '966500000003', 'WhatsApp to Monther');
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(toMonther(/وصلت شحنة الإرجاع/).length, 1, 'and on his phone');
   const recv = (await monther('GET', '/api/exchanges?status=received')).body.rows[0];
   assert.equal(recv.received_name, 'عبدالله');
   // undoing the scan puts it back as not arrived
@@ -412,6 +422,12 @@ test('exchanges: customer service registers the return, the warehouse scan match
   assert.equal(exchangeTick(db, morning + 60_000), 0, 'once only');
   assert.match(notes("kind = 'exchange_due' AND user_id = ?", id('monther')).at(-1).body, /مرّت \*5 أيام\*/);
   assert.ok(notes("kind = 'exchange_due' AND user_id IS NULL").length, 'the manager hears too');
+  await new Promise((r) => setTimeout(r, 30));
+  const due = toMonther(/شحنة إرجاع ما وصلت/);
+  assert.equal(due.length, 1);
+  assert.equal(due[0].urgent, true, 'stays on screen until he opens it');
+  assert.equal(due[0].url, '/#/exchanges');
+  saveSettings(db, { notify: { ...getSettings(db).notify, staff_account: true } });
   const list = (await monther('GET', '/api/exchanges')).body;
   assert.equal(list.rows[0].overdue, true);
   assert.equal(list.counts.overdue, 1);
