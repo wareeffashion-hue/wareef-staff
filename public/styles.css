@@ -58,7 +58,7 @@ img { max-width: 100%; }
 .rail .brand span { font-size: .8rem; color: var(--muted); line-height: 1.3; }
 .rail a { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-radius: 8px; text-decoration: none; color: var(--ink-2); }
 .rail a:hover { background: var(--sunk); color: var(--ink); }
-.rail a.on { background: var(--btn); color: var(--btn-ink); box-shadow: 0 8px 28px -10px rgb(178 141 255 / 70%); }
+.rail a.on { color: var(--btn-ink); } /* the highlight itself is the gliding .nav-ink */
 .rail a .badge { margin-inline-start: auto; }
 .rail .foot { margin-top: auto; padding: 12px 8px 0; border-top: 1px solid var(--line); display: grid; gap: 6px; }
 .main { min-width: 0; padding-block: 24px 48px; padding-inline: clamp(16px, 3vw, 36px); display: grid; gap: 20px; align-content: start; max-width: 1240px; width: 100%; }
@@ -75,7 +75,7 @@ img { max-width: 100%; }
     padding: 6px 4px calc(6px + env(safe-area-inset-bottom, 0px)); overflow-x: auto; gap: 2px; }
   .tabbar a { flex: 1 0 64px; display: grid; justify-items: center; gap: 2px; padding: 6px 4px; border-radius: 8px; text-decoration: none; font-size: .72rem; color: var(--muted); white-space: nowrap; }
   .tabbar a svg { width: 22px; height: 22px; }
-  .tabbar a.on { color: var(--ink); background: var(--sunk); }
+  .tabbar a.on { color: var(--ink); }
   .mobile-head { display: flex !important; }
 }
 .mobile-head { display: none; align-items: center; justify-content: space-between; gap: 12px; }
@@ -142,7 +142,7 @@ label.check { display: inline-flex; align-items: center; gap: 8px; font-size: .9
 .login { min-height: 100vh; display: grid; place-items: center; padding: 24px 16px; position: relative; overflow: hidden; }
 
 .login .card { position: relative; width: min(400px, 100%); background: var(--surface); -webkit-backdrop-filter: blur(22px); backdrop-filter: blur(22px); border: 1px solid var(--line-2); border-radius: 14px; padding: 32px 28px; display: grid; gap: 18px; box-shadow: var(--shadow); }
-.login .card img { width: 120px; margin: 0 auto; filter: var(--logo-filter); }
+.login .card img { width: 150px; margin: 0 auto; filter: var(--logo-filter) drop-shadow(0 6px 24px rgb(123 85 240 / 22%)); }
 .login .tag { text-align: center; color: var(--muted); font-size: .9rem; letter-spacing: .02em; }
 
 /* ---------- employee punch screen */
@@ -159,8 +159,8 @@ label.check { display: inline-flex; align-items: center; gap: 8px; font-size: .9
 
 /* ---------- staff cards (dashboard) */
 .staff { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 230px), 1fr)); gap: 12px; }
-.sc { border: 1px solid var(--line); border-radius: var(--r); padding: 14px; display: grid; gap: 8px; background: var(--surface); cursor: pointer; text-align: start; }
-.sc:hover { border-color: var(--ink-2); }
+.sc { position: relative; overflow: hidden; border: 1px solid var(--line); border-radius: var(--r); padding: 14px; display: grid; gap: 8px; background: rgb(255 255 255 / 70%); cursor: pointer; text-align: start; }
+.sc:hover { border-color: var(--line-2); background: #fff; }
 .sc .top { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 .sc .avatar { width: 38px; height: 38px; border-radius: 50%; background: var(--btn); color: var(--btn-ink); display: grid; place-items: center; font-weight: 700; flex: none; }
 .sc .who { display: flex; gap: 10px; align-items: center; min-width: 0; }
@@ -201,8 +201,6 @@ body::after { content: ""; position: fixed; inset: 0; z-index: 0; pointer-events
   -webkit-mask-image: radial-gradient(ellipse 70% 60% at 65% 30%, #000 0%, transparent 75%); mask-image: radial-gradient(ellipse 70% 60% at 65% 30%, #000 0%, transparent 75%); opacity: .55; }
 .silver { background: var(--silver); background-size: 220% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; }
 @media (prefers-reduced-motion: no-preference) { .silver, .clock { animation: sheen 9s ease-in-out infinite alternate; } @keyframes sheen { to { background-position: 100% 0; } } }
-.login .card img { width: 150px; filter: var(--logo-filter) drop-shadow(0 6px 24px rgb(123 85 240 / 22%)); }
-.sc .avatar { background: var(--btn); }
 .timeline .ev .dot { background: var(--ink); box-shadow: 0 0 12px rgb(123 85 240 / 45%); }
 
 /* ---------- dashboard hero */
@@ -282,8 +280,6 @@ body::after { content: ""; position: fixed; inset: 0; z-index: 0; pointer-events
 .ribbon .total b { font-size: 2.6rem; font-weight: 300; line-height: 1; }
 
 /* ---------- staff cards, ink edition */
-.sc { position: relative; overflow: hidden; background: rgb(255 255 255 / 70%); border-color: var(--line); }
-.sc:hover { border-color: var(--line-2); background: #fff; }
 .sc .glyph { position: absolute; inset-inline-end: -8px; bottom: -36px; font: 700 150px/1 var(--font); color: transparent; -webkit-text-stroke: 1px rgb(123 85 240 / 18%); pointer-events: none; }
 .sc::before { content: ""; position: absolute; inset: 0; border-radius: inherit; padding: 1px; background: var(--foil); -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor; mask-composite: exclude; opacity: 0; transition: opacity .3s; pointer-events: none; }
 .sc:hover::before { opacity: .9; }
@@ -383,11 +379,10 @@ body::after { content: ""; position: fixed; inset: 0; z-index: 0; pointer-events
 .rail, .tabbar { isolation: isolate; }
 .nav-ink { position: absolute; top: 0; left: 0; z-index: -1; border-radius: 8px; pointer-events: none; opacity: 0;
   background: var(--btn); box-shadow: 0 8px 28px -10px rgb(178 141 255 / 70%); }
-.rail a.on, .rail a.on:hover { background: transparent; box-shadow: none; }
+.rail a.on:hover { background: transparent; }
 .rail a, .tabbar a { position: relative; overflow: hidden; }
 .tabbar .nav-ink { background: var(--sunk); box-shadow: none; }
 .tabbar .nav-ink::after { content: ""; position: absolute; top: -6px; left: 22%; right: 22%; height: 3px; border-radius: 0 0 4px 4px; background: var(--foil); box-shadow: 0 2px 12px rgb(171 134 255 / 70%); }
-@media (max-width: 860px) { .tabbar a.on { background: transparent; } .tabbar { position: fixed; } }
 
 /* top loading bar while a page fetches */
 .loadbar { position: fixed; top: 0; inset-inline: 0; height: 3px; z-index: 60; pointer-events: none; opacity: 0; overflow: hidden; }

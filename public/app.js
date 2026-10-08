@@ -47,7 +47,11 @@ const table = (head, rows, { empty = 'لا توجد بيانات', foot = null, 
   : `<div class="tbl"><p class="empty">${empty}</p></div>`;
 const opt = (v, label, sel) => `<option value="${esc(v)}" ${String(v) === String(sel) ? 'selected' : ''}>${esc(label)}</option>`;
 
+// A GET started by a page we've since left is dropped quietly, so a slow answer can't paint over the new page.
+const STALE = 'stale-page';
+let NAV = 0;
 async function api(path, { method = 'GET', body } = {}) {
+  const nav = NAV;
   const res = await fetch(path, {
     method,
     headers: { 'X-Requested-With': 'fetch', ...(body ? { 'Content-Type': 'application/json' } : {}) },
@@ -57,8 +61,17 @@ async function api(path, { method = 'GET', body } = {}) {
   const data = await res.json().catch(() => ({}));
   if (res.status === 401 && path !== '/api/login') { ME = null; renderLogin(); throw new Error(data.error || 'يرجى تسجيل الدخول'); }
   if (!res.ok) throw new Error(data.error || 'تعذّر تنفيذ الطلب');
+  if (method === 'GET' && nav !== NAV) throw new Error(STALE);
   return data;
 }
+
+// Timers that belong to the page on screen; route() stops them when the page changes.
+let PAGE_TIMERS = [];
+const every = (fn, ms) => { const t = setInterval(fn, ms); PAGE_TIMERS.push(t); return t; };
+
+/** A date picked on a page is remembered for that day only; tomorrow the page opens on its own day again. */
+const dayPick = (key) => { const [d, on] = String(sessionStorage.getItem(key) || '').split('|'); return d && on === today() ? d : today(); };
+const setDayPick = (key, d) => sessionStorage.setItem(key, `${d || today()}|${today()}`);
 
 const calm = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
 
@@ -71,6 +84,7 @@ function fadeOut(el, cls = 'out', ms = 260) {
 }
 
 function toast(msg, err = false) {
+  if (msg === STALE) return;
   $$('.toast').forEach((t) => fadeOut(t));
   const el = document.createElement('div');
   const ms = err ? 5000 : 2600;
@@ -78,7 +92,7 @@ function toast(msg, err = false) {
   el.style.setProperty('--life', `${ms}ms`);
   el.setAttribute('role', 'status');
   el.textContent = msg;
-  document.body.append(el);
+  ($('dialog[open]') || document.body).append(el); // inside an open dialog, or it sits dimmed under its backdrop
   setTimeout(() => fadeOut(el), ms);
 }
 
@@ -100,6 +114,7 @@ async function act(btn, fn, okMsg) {
     flash(btn, 'ok');
     return r;
   } catch (e) {
+    if (e.message === STALE) return undefined;
     toast(e.message, true);
     flash(btn, 'err', 550);
     return undefined;
@@ -168,7 +183,12 @@ const PUSH = {
   supported: () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window,
   ios: () => /iphone|ipad|ipod/i.test(navigator.userAgent),
   standalone: () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true,
-  async sub() { if (!PUSH.supported()) return null; const reg = await navigator.serviceWorker.ready; return reg.pushManager.getSubscription(); },
+  async sub() {
+    if (!PUSH.supported()) return null;
+    // if the service worker never registers, `ready` never settles: give up after a few seconds
+    const reg = await Promise.race([navigator.serviceWorker.ready, new Promise((r) => setTimeout(() => r(null), 4000))]);
+    return reg ? reg.pushManager.getSubscription() : null;
+  },
   async enable() {
     if (!PUSH.supported()) throw new Error(PUSH.ios() && !PUSH.standalone() ? 'على الآيفون: أضف النظام للشاشة الرئيسية أولاً (Safari ← مشاركة ← إضافة إلى الشاشة الرئيسية) ثم افتحه منها' : 'هذا المتصفح لا يدعم التنبيهات. استخدم Chrome');
     const perm = await Notification.requestPermission();
@@ -211,12 +231,13 @@ const ALARM = {
   ring({ title = 'منبّه الدوام', body = '', url = '' } = {}) {
     ALARM.stop();
     ALARM.unlock();
+    $$('dialog[open]').forEach((d) => d.close()); // an open dialog would sit above the alarm and block its button
     const box = document.createElement('div');
     box.className = 'alarm';
     box.setAttribute('role', 'alertdialog');
     box.innerHTML = `<div class="alarm-card"><div class="alarm-bell">🔔</div><h2>${esc(title)}</h2><p>${esc(body).replace(/\n/g, '<br>')}</p><button class="btn" type="button">إيقاف المنبّه</button></div>`;
     document.body.append(box);
-    $('button', box).onclick = () => { ALARM.stop(); if (url && url !== '/') location.hash = `#${url}`; };
+    $('button', box).onclick = () => { ALARM.stop(); if (url.includes('#/')) location.hash = url.slice(url.indexOf('#')); };
     ALARM.audio.currentTime = 0;
     ALARM.audio.volume = 1;
     ALARM.audio.play().catch(() => {});
@@ -330,6 +351,10 @@ function route() {
   const key = location.hash.replace(/^#\/?/, '').split('?')[0] || items[0][0];
   const page = key === 'account' || (key === 'notifications' && ME.role === 'admin') || items.some(([k]) => k === key) ? key : items[0][0];
   clearInterval(window.__tick);
+  PAGE_TIMERS.forEach(clearInterval);
+  PAGE_TIMERS = [];
+  NAV++;
+  $$('dialog[open]').forEach((d) => d.close());
   const sig = `${ME.id}|${items.map(([k]) => k).join(',')}`;
   let shell = $('.shell');
   if (!shell || shell.dataset.sig !== sig) {
@@ -363,7 +388,7 @@ function route() {
     shell.classList.add('loading');
   }
   const fn = PAGES[page] || PAGES.account;
-  fn().catch((e) => { render(`<div class="panel"><p>${esc(e.message)}</p></div>`); });
+  fn().catch((e) => { if (e.message !== STALE && ME) render(`<div class="panel"><p>${esc(e.message)}</p></div>`); });
 }
 
 /** Slide the highlight under the active item, in the side rail and in the phone tab bar. */
@@ -385,6 +410,9 @@ window.addEventListener('resize', () => placeInk(true));
 
 async function logout() {
   if (!confirm('تسجيل الخروج من النظام؟')) return;
+  // this phone stops getting the account's alerts (a shared phone must not show them to the next person)
+  const sub = await PUSH.sub().catch(() => null);
+  if (sub) await api('/api/push/unsubscribe', { method: 'POST', body: { endpoint: sub.endpoint } }).catch(() => {});
   await api('/api/logout', { method: 'POST' }).catch(() => {});
   ME = null;
   renderLogin();
@@ -395,6 +423,7 @@ document.addEventListener('click', (e) => { if (e.target.closest('[data-logout]'
 /** Write the page body (keeps the phone header). */
 function render(html) {
   const main = $('#page');
+  if (!main) { const off = document.createElement('div'); off.innerHTML = html; return off; } // signed out meanwhile
   const head = $('.mobile-head').outerHTML;
   main.innerHTML = head + html;
   main.classList.remove('leaving');
@@ -567,8 +596,7 @@ PAGES.today = async () => {
   }
   draw();
   window.__tick = setInterval(tick, 1000);
-  const poll = setInterval(async () => {
-    if (!$('#clock')) { clearInterval(poll); return; }
+  every(async () => {
     if (data.exit?.status !== 'pending' && Date.now() - lastPoll < 55000) return;
     lastPoll = Date.now();
     try { data = await api('/api/my/today'); draw(); } catch {}
@@ -690,7 +718,7 @@ PAGES.account = async () => {
 
 // ------------------------------------------------------------------ manager: dashboard
 PAGES.dashboard = async () => {
-  const date = sessionStorage.getItem('dash-date') || today();
+  const date = dayPick('dash-date');
   const d = await api(`/api/dashboard?date=${date}`);
   FLAGS = d.flagLabels;
   const att = d.attendance;
@@ -780,9 +808,9 @@ PAGES.dashboard = async () => {
         ${table(['النوع', 'التاجر', 'الفاتورة', 'كود المنتج', 'العدد'], d.stock.map((s) => `<tr><td>${pill(STOCK[s.kind], s.kind === 'new_goods' ? 'good' : 'warn')}</td><td>${esc(s.party)}</td><td dir="ltr">${esc(s.invoice_no)}</td><td dir="ltr">${esc(s.sku || s.description)}</td><td>${int(s.quantity)}</td></tr>`), { empty: 'لا يوجد شيء مسجّل اليوم' })}
       </section>
     </div>`);
-  $('#dd', pg).onchange = (e) => { sessionStorage.setItem('dash-date', e.target.value || today()); refresh(); };
-  $$('[data-u]', pg).forEach((b) => { b.addEventListener('click', () => dayDetail(+b.dataset.u, b.dataset.n, date)); });
-  $$('[data-t]', pg).forEach((b) => { b.onclick = () => ticketModal(+b.dataset.t); });
+  $('#dd', pg).onchange = (e) => { setDayPick('dash-date', e.target.value); refresh(); };
+  $$('[data-u]', pg).forEach((b) => { b.addEventListener('click', () => dayDetail(+b.dataset.u, b.dataset.n, date).catch((e) => toast(e.message, true))); });
+  $$('[data-t]', pg).forEach((b) => { b.onclick = () => ticketModal(+b.dataset.t).catch((e) => toast(e.message, true)); });
   $$('[data-xa]', pg).forEach((b) => { b.onclick = async () => { if (await act(b, () => api(`/api/leaves/${b.dataset.xa}`, { method: 'PUT', body: { status: 'approved' } }), 'تمت الموافقة ووصل الموظف إشعار')) refresh(); }; });
   $$('[data-xr]', pg).forEach((b) => { b.onclick = async () => {
     const why = prompt('سبب الرفض (اختياري)') ;
@@ -1010,7 +1038,7 @@ PAGES.attendance = async () => {
       ${table(['التاريخ', 'الموظف', 'النوع', 'ملاحظة', ''], ex.excuses.map((e) => `<tr><td>${fmtDate(e.date)}</td><td>${esc(e.user_name || 'الجميع')}</td><td>${EXC[e.kind]}</td><td class="wrap">${esc(e.note)}</td><td><button class="link bad" data-ex="${e.id}">حذف</button></td></tr>`), { empty: 'لا توجد إجازات أو أعذار مسجّلة' })}
     </section>`);
   $('#flt', pg).onchange = (e) => { sessionStorage.setItem('att', JSON.stringify(formData(e.currentTarget))); refresh(); };
-  $$('tr[data-u]', pg).forEach((tr) => { tr.onclick = () => dayDetail(+tr.dataset.u, tr.dataset.n, tr.dataset.d); });
+  $$('tr[data-u]', pg).forEach((tr) => { tr.onclick = () => dayDetail(+tr.dataset.u, tr.dataset.n, tr.dataset.d).catch((e) => toast(e.message, true)); });
   const kind = $('#ex-kind', pg);
   kind.onchange = () => { $('#ex-user-l', pg).hidden = kind.value === 'holiday'; };
   $('#exF', pg).onsubmit = async (e) => {
@@ -1032,7 +1060,7 @@ PAGES.payroll = async () => {
         : `<button class="btn" id="pay-close" type="button">إقفال الشهر وإرسال القسائم</button>`}</div></div>
     <section class="panel closebar ${d.closed ? 'done' : ''}">
       ${d.closed
-        ? `<p>${pill('مقفل', 'good')} أُقفل ${esc(d.closed.by ? `بواسطة ${d.closed.by} ` : '')}يوم ${new Date(d.closed.at + tz * 60000).toISOString().slice(0, 10)}. الأرقام مجمّدة، والخصومات والسلف لهذا الشهر لا تتغير حتى تفتحه.</p>`
+        ? `<p>${pill('مقفل', 'good')} أُقفل ${esc(d.closed.by ? `بواسطة ${d.closed.by} ` : '')}يوم ${localIso(d.closed.at).slice(0, 10)}. الأرقام مجمّدة، والخصومات والسلف لهذا الشهر لا تتغير حتى تفتحه.</p>`
         : `<p>${pill('مفتوح', 'warn')} الأرقام تتحدث مع كل بصمة وخصم. في نهاية الشهر اضغط «إقفال الشهر»: يتجمّد المسيّر وتوصل كل موظف قسيمة راتبه على واتساب.</p>`}
     </section>
     <section class="panel">
@@ -1135,7 +1163,7 @@ function confirmDelete(root, sel, urlOf) {
 
 // ------------------------------------------------------------------ daily operations (manager + allowed staff)
 PAGES.ops = async () => {
-  const date = sessionStorage.getItem('ops-date') || today();
+  const date = dayPick('ops-date');
   const d = await api(`/api/ops?from=${addDays(today(), -30)}&to=${today()}`);
   const day = d.ops.find((o) => o.date === date) || { channels: {}, metrics: {}, notes: '' };
   const isAdmin = ME.role === 'admin';
@@ -1203,8 +1231,8 @@ PAGES.ops = async () => {
         { empty: 'لا توجد سجلات' })}
     </section>` : ''}`);
 
-  $('#od', pg).onchange = (e) => { sessionStorage.setItem('ops-date', e.target.value || today()); refresh(); };
-  $$('tr[data-od]', pg).forEach((tr) => { tr.onclick = () => { sessionStorage.setItem('ops-date', tr.dataset.od); refresh(); }; });
+  $('#od', pg).onchange = (e) => { setDayPick('ops-date', e.target.value); refresh(); };
+  $$('tr[data-od]', pg).forEach((tr) => { tr.onclick = () => { setDayPick('ops-date', tr.dataset.od); refresh(); }; });
   const oF = $('#oF', pg);
   if (oF) oF.onsubmit = async (e) => {
     e.preventDefault();
@@ -1426,7 +1454,7 @@ PAGES.tickets = async () => {
       </section>
     </div>`);
   $('#tf', pg).onchange = (e) => { sessionStorage.setItem('tk', JSON.stringify(formData(e.currentTarget))); refresh(); };
-  $$('[data-t]', pg).forEach((b) => { b.onclick = () => ticketModal(+b.dataset.t); });
+  $$('[data-t]', pg).forEach((b) => { b.onclick = () => ticketModal(+b.dataset.t).catch((e) => toast(e.message, true)); });
   const nt = $('#nt', pg);
   if (nt) nt.onsubmit = async (e) => { e.preventDefault(); if (await act($('button', e.target), () => api('/api/tickets', { method: 'POST', body: formData(e.target) }), 'تم رفع التذكرة')) refresh(); };
 };
@@ -1438,7 +1466,7 @@ async function ticketModal(id) {
     <div class="row" style="align-items:center">${pill(TK[t.kind], 'plain')} ${pill(...TS[t.status])} <span class="muted small">${esc(t.user_name)} · ${fmtDate(t.date)} ${fmtT(t.created_at)} · أولوية ${PRI[t.priority]}</span></div>
     <div class="thread">
       <div class="msg"><div class="meta">${esc(t.user_name)}</div>${esc(t.body) || '<span class="muted">بدون تفاصيل</span>'}</div>
-      ${replies.map((r) => `<div class="msg ${r.role === 'admin' ? 'mgr' : ''}"><div class="meta">${esc(r.user_name || '')} · ${fmtDate(new Date(r.created_at + tz * 60000).toISOString().slice(0, 10))} ${fmtT(r.created_at)}</div>${esc(r.body)}</div>`).join('')}
+      ${replies.map((r) => `<div class="msg ${r.role === 'admin' ? 'mgr' : ''}"><div class="meta">${esc(r.user_name || '')} · ${fmtDate(localIso(r.created_at).slice(0, 10))} ${fmtT(r.created_at)}</div>${esc(r.body)}</div>`).join('')}
     </div>
     <form class="form" id="rp"><label class="f">ردّ<textarea name="body" id="rp-body" required></textarea></label>
       <div class="row">${isAdmin ? `<label class="f">الحالة<select id="rp-status" name="status">${Object.entries(TS).map(([k, v]) => opt(k, v[0], t.status)).join('')}</select></label>` : ''}<button class="btn" type="submit" style="flex:0 0 auto">إرسال</button></div>
@@ -1474,7 +1502,7 @@ PAGES.flags = async () => {
       punches: table(['التاريخ', 'الوقت', 'الموظف', 'النوع', 'المؤشر', 'الشبكة', 'الموقع'], suspicious.map((p) => `<tr class="click" data-u="${p.user_id}" data-n="${esc(p.user_name)}" data-d="${p.date}" style="${p.voided ? 'opacity:.45' : ''}"><td>${fmtDate(p.date)}</td><td>${fmtT(p.ts)}</td><td>${esc(p.user_name)}</td><td>${PUNCH[p.type]}</td><td class="wrap">${flagList(p.flags.filter((f) => f !== 'manager_entry'))}</td><td dir="ltr" class="small">${esc(p.ip || '')}</td><td>${p.lat ? `<a class="link" href="https://maps.google.com/?q=${p.lat},${p.lng}" target="_blank" rel="noopener">خريطة</a>` : '—'}</td></tr>`), { empty: 'لا توجد بصمات مشبوهة' }),
       days: table(['التاريخ', 'الموظف', 'الملاحظة'], d.days.map((x) => `<tr class="click" data-u="${x.userId}" data-n="${esc(x.name)}" data-d="${x.date}"><td>${fmtDate(x.date)}</td><td>${esc(x.name)}</td><td class="wrap">${flagList(x.flags)}</td></tr>`), { empty: 'لا توجد ملاحظات' }),
       manual: table(['التاريخ', 'الوقت', 'الموظف', 'النوع', 'السبب'], d.punches.filter((p) => p.flags.includes('manager_entry')).map((p) => `<tr class="click" data-u="${p.user_id}" data-n="${esc(p.user_name)}" data-d="${p.date}"><td>${fmtDate(p.date)}</td><td>${fmtT(p.ts)}</td><td>${esc(p.user_name)}</td><td>${PUNCH[p.type]}</td><td class="wrap">${esc(p.note)}</td></tr>`), { empty: 'لا توجد بصمات يدوية' }),
-      audit: table(['الوقت', 'بواسطة', 'الإجراء', 'الموظف', 'التفاصيل'], d.audit.map((a) => `<tr><td>${new Date(a.ts + tz * 60000).toISOString().slice(0, 16).replace('T', ' ')}</td><td>${esc(a.actor_name || '')}</td><td>${ACTIONS[a.action] || esc(a.action)}</td><td>${esc(a.target_name || '—')}</td><td class="wrap small" dir="auto">${esc(a.details)}</td></tr>`), { empty: 'لا توجد تعديلات' }),
+      audit: table(['الوقت', 'بواسطة', 'الإجراء', 'الموظف', 'التفاصيل'], d.audit.map((a) => `<tr><td>${localIso(a.ts).slice(0, 16).replace('T', ' ')}</td><td>${esc(a.actor_name || '')}</td><td>${ACTIONS[a.action] || esc(a.action)}</td><td>${esc(a.target_name || '—')}</td><td class="wrap small" dir="auto">${esc(a.details)}</td></tr>`), { empty: 'لا توجد تعديلات' }),
     }[tab]}</section>
     <section class="panel"><header><h2>كيف يكتشف النظام التلاعب</h2></header>
       <ul class="muted small" style="margin:0;padding-inline-start:18px;display:grid;gap:4px">
@@ -1486,7 +1514,7 @@ PAGES.flags = async () => {
       </ul>
     </section>`);
   $$('[data-tab]', pg).forEach((b) => { b.onclick = () => { sessionStorage.setItem('flags-tab', b.dataset.tab); refresh(); }; });
-  $$('tr[data-u]', pg).forEach((tr) => { tr.onclick = () => dayDetail(+tr.dataset.u, tr.dataset.n, tr.dataset.d); });
+  $$('tr[data-u]', pg).forEach((tr) => { tr.onclick = () => dayDetail(+tr.dataset.u, tr.dataset.n, tr.dataset.d).catch((e) => toast(e.message, true)); });
 };
 
 // ------------------------------------------------------------------ manager: staff
@@ -1629,10 +1657,11 @@ function waPanel(pg) {
     }
   };
   const poll = async () => {
+    if (!box.isConnected || !ME) { clearInterval(timer); return; }
     try { draw(await api('/api/whatsapp')); } catch { /* keep the last state */ }
   };
   poll();
-  timer = setInterval(poll, 3000);
+  timer = every(poll, 3000);
 }
 
 // ------------------------------------------------------------------ manager: notifications log
@@ -1642,7 +1671,7 @@ PAGES.notifications = async () => {
   render(`
     <div class="topline"><h1>سجل إشعارات واتساب</h1><a class="link" href="#/settings">إعدادات الإشعارات</a></div>
     <section class="panel">
-      ${table(['الوقت', 'إلى', 'الموظف', 'الرسالة', 'الحالة'], d.notifications.map((n) => `<tr><td>${fmtDate(new Date(n.created_at + tz * 60000).toISOString().slice(0, 10))} ${fmtT(n.created_at)}</td>
+      ${table(['الوقت', 'إلى', 'الموظف', 'الرسالة', 'الحالة'], d.notifications.map((n) => `<tr><td>${fmtDate(localIso(n.created_at).slice(0, 10))} ${fmtT(n.created_at)}</td>
         <td dir="ltr" class="small">${esc(n.to_phone)}</td><td>${esc(n.user_name || 'المدير')}</td><td class="wrap small" style="white-space:pre-wrap;min-width:260px">${esc(n.body)}</td>
         <td>${pill(...(NS[n.status] || [n.status, '']))}${n.error && n.status !== 'skipped' ? `<div class="muted small">${esc(n.error)}</div>` : ''}</td></tr>`), { empty: 'لا توجد إشعارات بعد' })}
     </section>`);
@@ -1797,7 +1826,7 @@ PAGES.leaves = async () => {
       <section class="panel" style="${own ? '' : 'grid-column:1/-1'}"><header><h2>${d.leaves.length} طلب</h2></header>
         ${table(['#', ...(mgr ? ['الموظف'] : []), 'النوع', 'الموعد', 'السبب', 'الحالة', 'الرد'],
           d.leaves.map((q) => `<tr><td>${q.id}</td>${mgr ? `<td><b>${esc(q.user_name)}</b></td>` : ''}<td>${LK[q.kind]}</td><td class="nowrap">${leaveWhen(q)}</td>
-            <td class="wrap">${esc(q.reason)}</td><td class="nowrap">${pill(...LS[q.status])}${mgr && q.user_id !== ME.id ? `<div class="acts"><button class="btn sm" data-ok="${q.id}">موافقة</button><button class="btn sm ghost" data-no="${q.id}">رفض</button></div>` : ''}</td><td class="wrap">${esc(q.response) || '—'}</td></tr>`),
+            <td class="wrap">${esc(q.reason)}</td><td class="nowrap">${pill(...LS[q.status])}${mgr && q.user_id !== ME.id && !(q.minutes && q.left_at) ? `<div class="acts"><button class="btn sm" data-ok="${q.id}">موافقة</button><button class="btn sm ghost" data-no="${q.id}">رفض</button></div>` : ''}</td><td class="wrap">${esc(q.response) || '—'}</td></tr>`),
           { empty: 'لا توجد طلبات' })}
         ${mgr ? '<p class="muted small">تقدر توافق من واتساب مباشرة: رد على رسالة الطلب بـ <b>موافق ج12</b> أو <b>رفض ج12 السبب</b>.</p>' : ''}
       </section>
@@ -1978,32 +2007,41 @@ PAGES.scan = async () => {
       <p class="empty" id="empty" ${d.scans.length ? 'hidden' : ''}>لم يُمسح شيء بعد</p></div>
     </section>`);
   const input = $('#code', pg), box = $('#box', pg), res = $('#res', pg);
-  const focus = () => { if (!document.querySelector('dialog[open]') && document.activeElement !== input) input.focus({ preventScroll: true }); };
+  // keep the scanner's input focused, but never steal focus from a button or field the user moved to
+  const focus = () => {
+    const a = document.activeElement;
+    if (document.querySelector('dialog[open]') || (a && a !== document.body && a !== input)) return;
+    if (a !== input) input.focus({ preventScroll: true });
+  };
   focus();
-  const keep = setInterval(() => { if (!input.isConnected) { clearInterval(keep); return; } focus(); }, 800);
+  every(focus, 800);
   input.addEventListener('blur', () => setTimeout(focus, 150));
   $('#kb', pg).onclick = () => { input.inputMode = input.inputMode === 'none' ? 'text' : 'none'; input.blur(); setTimeout(() => input.focus(), 50); };
   const flash = (ok, text) => {
     box.classList.remove('ok', 'bad'); void box.offsetWidth; box.classList.add(ok ? 'ok' : 'bad');
     res.textContent = text; res.className = `sresult ${ok ? 'good' : 'bad'}`; beep(ok);
   };
+  // codes scanned while one is still being saved wait their turn instead of being lost
+  const waiting = [];
   let busy = false;
   async function submit(code) {
-    code = code.trim(); if (!code || busy) return; busy = true;
+    code = code.trim(); if (!code) return;
+    if (busy) { waiting.push(code); return; }
+    busy = true;
     try {
       const r = await api('/api/scans', { method: 'POST', body: { kind, code } });
       $('#cnt', pg).textContent = int(r.count);
       $('#list', pg).insertAdjacentHTML('afterbegin', rowHtml({ ...r, user_id: ME.id, user_name: ME.name }));
       $('#empty', pg).hidden = true;
       flash(true, `✓ ${code}${r.note ? ` · ${r.note}` : ''}`);
-    } catch (e) { flash(false, `${code}: ${e.message}`); } finally { busy = false; }
+    } catch (e) { flash(false, `${code}: ${e.message}`); } finally { busy = false; if (waiting.length && input.isConnected) submit(waiting.shift()); }
   }
   $('#scanF', pg).onsubmit = (e) => { e.preventDefault(); const v = input.value; input.value = ''; submit(v); };
   $$('[data-k]', pg).forEach((b) => { b.onclick = () => { sessionStorage.setItem('scan-kind', b.dataset.k); refresh(); }; });
   $('#list', pg).addEventListener('click', async (e) => {
     const b = e.target.closest('[data-undo]'); if (!b) return;
     const r = await act(b, () => api(`/api/scans/${b.dataset.undo}`, { method: 'DELETE' }), 'تم إلغاء المسح');
-    if (r) { b.closest('tr').remove(); $('#cnt', pg).textContent = int(r.count); }
+    if (r) { b.closest('tr').remove(); $('#cnt', pg).textContent = int(r.count); $('#empty', pg).hidden = !!$('#list tr', pg); }
   });
   const cam = $('#cam', pg);
   if (cam) cam.onclick = async () => {
@@ -2012,8 +2050,10 @@ PAGES.scan = async () => {
     const det = new BarcodeDetector();
     let last = '', lastAt = 0, live = true;
     const dl = modal('المسح بالكاميرا', '<video id="vid" playsinline muted style="width:100%;border-radius:12px;background:#000"></video><p class="muted small" style="text-align:center">وجّه الكاميرا على الباركود</p>', () => {});
-    const v = $('#vid', dl); v.srcObject = stream; await v.play();
+    // stop the camera however the dialog closes, even if the video never started
     dl.addEventListener('close', () => { live = false; stream.getTracks().forEach((tr) => tr.stop()); focus(); });
+    const v = $('#vid', dl); v.srcObject = stream;
+    try { await v.play(); } catch { dl.close(); toast('تعذّر تشغيل الكاميرا', true); return; }
     const loop = async () => {
       if (!live) return;
       try {

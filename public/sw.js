@@ -31,8 +31,11 @@ self.addEventListener('notificationclick', (e) => {
   const url = new URL(e.notification.data?.url || '/', self.location.origin).href;
   e.waitUntil((async () => {
     const wins = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
-    for (const w of wins) {
-      if (new URL(w.url).origin === self.location.origin) { await w.focus(); try { await w.navigate(url); } catch {} return; }
+    // the app's own window (not a report or payslip tab), else any window of the site, else a new one
+    const mine = wins.filter((w) => new URL(w.url).origin === self.location.origin);
+    const app = mine.find((w) => new URL(w.url).pathname === '/') || mine[0];
+    if (app) {
+      try { await app.focus(); await app.navigate(url); return; } catch { /* fall through and open one */ }
     }
     await self.clients.openWindow(url);
   })());

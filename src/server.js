@@ -82,7 +82,6 @@ const csv = (res, name, sections) => send(res, 200, toCsv(sections), {
   'Content-Disposition': `attachment; filename="${name}.csv"`,
 });
 
-export { decideLeave };
 
 /** Supervisors see attendance without the suggested deduction (salary-derived). */
 const hideMoney = (user, rows) => (user.role === 'admin' ? rows : rows.map(({ suggested, ...r }) => r));

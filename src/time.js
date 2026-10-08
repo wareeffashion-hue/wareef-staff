@@ -29,6 +29,9 @@ export function addDays(date, n) {
   return new Date(Date.parse(`${date}T00:00:00Z`) + n * DAY).toISOString().slice(0, 10);
 }
 
+/** dd/mm, for messages and notes. */
+export const dm = (d) => `${d.slice(8)}/${d.slice(5, 7)}`;
+
 export function isDate(s) {
   // the round trip rejects dates that don't exist (2026-02-31 would otherwise roll over to March)
   return typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s) && !Number.isNaN(Date.parse(`${s}T00:00:00Z`))

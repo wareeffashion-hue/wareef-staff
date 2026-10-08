@@ -4,7 +4,7 @@
 import { audit } from './db.js';
 import { HttpError } from './http.js';
 import { DAY } from './config.js';
-import { localDate, localTime } from './time.js';
+import { dm, localDate, localTime } from './time.js';
 import { appLink, normalizePhone, notifyActivity, notifyManager, queue } from './notify.js';
 import * as msg from './messages.js';
 
@@ -13,7 +13,6 @@ export const DUE_DAYS = 5;
 
 /** Tracking numbers compare without spaces, dashes or case. */
 export const normTrack = (s) => String(s ?? '').replace(/[\u0000-\u001f\s\-_]/g, '').toUpperCase();
-const dm = (d) => `${d.slice(8)}/${d.slice(5, 7)}`;
 const daysSince = (date, now) => Math.max(0, Math.round((Date.parse(`${localDate(now)}T00:00:00Z`) - Date.parse(`${date}T00:00:00Z`)) / DAY));
 const text = (v, max) => String(v ?? '').trim().slice(0, max);
 

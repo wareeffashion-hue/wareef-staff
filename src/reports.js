@@ -18,7 +18,6 @@ export const TICKET_STATUS = { open: 'مفتوحة', in_progress: 'قيد الم
 export const STOCK_KINDS = { merchant_return: 'مرتجع للتاجر', new_goods: 'فاتورة بضاعة جديدة' };
 export const REQUEST_KINDS = { release: 'طلب فسح لإرجاع منتجات', shortage: 'طلب نواقص' };
 export const REQUEST_STATUS = { pending: 'بانتظار المدير', approved: 'تمت الموافقة', rejected: 'مرفوض', done: 'تم التنفيذ' };
-export const EXCUSE_KINDS = { leave: 'إجازة', sick: 'مرضية', holiday: 'إجازة رسمية', excused: 'عذر مقبول' };
 
 /** One row per day that has any operations data: channel orders plus every daily metric. */
 export function opsRows(db, from, to) {

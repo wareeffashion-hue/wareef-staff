@@ -3,13 +3,12 @@
 // The day's count replaces the manual number ("الشحنات المرسلة" / "مرتجعات دخلت المستودع").
 import { audit, tx } from './db.js';
 import { HttpError } from './http.js';
-import { localDate, localTime } from './time.js';
+import { dm, localDate, localTime } from './time.js';
 import { matchReturn, unmatchScan } from './exchanges.js';
 
 export const SCAN_KINDS = { shipment: 'شحنة طالعة', return: 'مرتجع من عميل' };
 export const SCAN_METRIC = { shipment: 'shipments', return: 'returns_warehouse' };
 const UNDO_MS = 10 * 60_000;
-const dm = (d) => `${d.slice(8)}/${d.slice(5, 7)}`;
 
 export function cleanCode(raw) {
   const code = String(raw ?? '').replace(/[\u0000-\u001f]/g, '').trim();
