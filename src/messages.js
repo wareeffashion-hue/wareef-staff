@@ -333,7 +333,7 @@ export const exchangeArrived = ({ tracking, order, customer, kind, by, days, lin
 export const exchangeDue = ({ tracking, order, customer, phone, kind, days, date, link }) => card({
   icon: '⏰', title: 'شحنة إرجاع ما وصلت',
   lines: [`مرّت *${days} أيام* من تسجيلها (${date}) وما وصلتنا قطعة العميل، والبديل انشحن له.`],
-  fields: [['رقم الشحنة', tracking], ...(order ? [['الطلب', order]] : []), ...(customer ? [['العميل', customer]] : []), ...(phone ? [['جوال العميل', phone]] : []), ['النوع', kind]],
+  fields: [['رقم الشحنة', tracking], ...(order ? [['الطلب', order]] : []), ...(customer ? [['العميل', customer]] : []), ...(phone ? [['جوال العميل', String(phone).replace(/^966(5\d{8})$/, '0$1')]] : []), ['النوع', kind]],
   steps: ['تواصل مع العميل وتأكد إنه أرسل الشحنة', 'اكتب نتيجة المتابعة في ملاحظة الشحنة بالنظام'],
   link,
 });
