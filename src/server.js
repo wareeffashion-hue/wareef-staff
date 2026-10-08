@@ -6,10 +6,10 @@ import { extname, join, normalize, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config, DAY } from './config.js';
 import { openDb, audit, tx } from './db.js';
-import { HttpError, Router, clientIp, parseJson, rateLimiter, readBody, send } from './http.js';
+import { HttpError, Router, clientIp, parseCookies, parseJson, rateLimiter, readBody, send } from './http.js';
 import {
   bootstrap, can, isManager, requireManager, currentUser, deviceId, hashPassword, login, logout, requireAdmin, requireOps, requirePerm,
-  sessionCookie, validatePassword, validUsername, verifyPassword,
+  sessionCookie, tokenHash, SESSION_COOKIE, validatePassword, validUsername, verifyPassword,
 } from './auth.js';
 import { getSettings, saveSettings, allPeriods, permissionList } from './settings.js';
 import { localDate, isDate, addDays, monthBounds, localTime, at } from './time.js';
@@ -18,9 +18,9 @@ import { FLAG_LABELS, NEXT, lastPunch, managerPunch, recordPunch, voidPunch } fr
 import {
   attendanceSection, dailyReport, scansSection, debtBalances, debtRows, debtsSection, deductionRows, deductionsSection,
   opsRows, opsSection, payroll, payrollSection, punchesSection, requestRows, requestsSection, stockRows, stockSection, ticketRows, ticketsSection, toCsv,
+  DEDUCTION_LABELS, TICKET_KINDS, withoutMoney,
 } from './reports.js';
-import { renderDailyReport } from './print.js';
-import { waAutoStart, waLogout, waOnMessage, waQrSvg, waStart, waStatus } from './wa.js';
+import { waAutoStart, waLogout, waOnMessage, waQrSvg, waShutdown, waStart, waStatus } from './wa.js';
 import { appLink, dailyPdf, flush, normalizePhone, notifyActivity, notifyEmployee, notifyManager, providerStatus, queue, startNotifier, dailySummary } from './notify.js';
 import { decideLeave, decideRequest } from './decisions.js';
 import { announceAward, assertOpen, awardOf, closeMonth, closedMonth, monthlyData, monthlyTick, payrollFor, reopenMonth, sendPayslips } from './monthly.js';
@@ -30,9 +30,8 @@ import { currentExit, endExit, exitTick, requestExit, startExit } from './exits.
 import { SCAN_KINDS, SCAN_METRIC, addScan, removeScan, scanCounts, scanList } from './scans.js';
 import { addExchange, exchangeTick, listExchanges, receiveManually, removeExchange, updateExchange } from './exchanges.js';
 import { pushTo, removeSubscription, saveSubscription, vapidKeys } from './push.js';
-import { renderMonthlyReport, renderPayslip } from './print.js';
+import { renderDailyReport, renderMonthlyReport, renderPayslip } from './print.js';
 import * as msg from './messages.js';
-import { DEDUCTION_LABELS, TICKET_KINDS, PUNCH_LABELS } from './reports.js';
 
 const PUBLIC_DIR = fileURLToPath(new URL('../public/', import.meta.url));
 const MIME = {
@@ -45,6 +44,7 @@ const SECURITY_HEADERS = {
   'X-Frame-Options': 'DENY',
   'Referrer-Policy': 'same-origin',
   'Permissions-Policy': 'camera=(self), microphone=(), geolocation=(self)',
+  ...(config.secureCookies ? { 'Strict-Transport-Security': 'max-age=31536000' } : {}),
 };
 
 const num = (v, lo = 0, hi = 1e9) => {
@@ -53,6 +53,14 @@ const num = (v, lo = 0, hi = 1e9) => {
   return Math.round(n * 100) / 100;
 };
 const text = (v, max = 500) => String(v ?? '').trim().slice(0, max);
+/** A supervisor can't approve, excuse or edit their own attendance or requests: that stays with the owner. */
+const notSelf = (user, targetId) => {
+  if (user.role !== 'admin' && Number(targetId) === user.id) throw new HttpError(403, 'ما تقدر تعتمد أو تعدّل سجلك بنفسك، هذا عند المدير');
+};
+/** Money-related audit entries (salaries, deductions, loans, payroll) are for the owner only. */
+const MONEY_AUDIT = /^(deduction|debt|payroll)\./;
+const auditFor = (user, rows) => (user.role === 'admin' ? rows
+  : rows.filter((a) => !MONEY_AUDIT.test(a.action)).map((a) => (a.action.startsWith('user.') ? { ...a, details: '' } : a)));
 const needDate = (v, fallback) => {
   const d = v || fallback;
   if (!isDate(d)) throw new HttpError(400, 'التاريخ غير صحيح');
@@ -60,7 +68,7 @@ const needDate = (v, fallback) => {
 };
 const needMonth = (v) => {
   const m = v || localDate().slice(0, 7);
-  if (!/^\d{4}-\d{2}$/.test(m)) throw new HttpError(400, 'الشهر غير صحيح');
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(m)) throw new HttpError(400, 'الشهر غير صحيح');
   return m;
 };
 const range = (url, days = 30) => {
@@ -107,11 +115,13 @@ function myToday(db, user, now = Date.now()) {
 export function createApp(db) {
   const r = new Router();
   const loginLimit = rateLimiter({ limit: 10, windowMs: 15 * 60_000 });
+  const loginUserLimit = rateLimiter({ limit: 20, windowMs: 15 * 60_000 }); // per account, whatever the IP
 
   // ------------------------------------------------------------ session
   r.post('/api/login', async ({ req, res }) => {
     if (!loginLimit(clientIp(req))) throw new HttpError(429, 'محاولات كثيرة. حاول بعد ربع ساعة');
     const body = parseJson(await readBody(req));
+    if (!loginUserLimit(`u:${String(body.username || '').trim().toLowerCase()}`)) throw new HttpError(429, 'محاولات كثيرة على هذا الحساب. حاول بعد ربع ساعة');
     const { token, user } = login(db, body.username, body.password);
     send(res, 200, { ok: true, role: user.role }, { 'Set-Cookie': sessionCookie(token) });
   });
@@ -133,22 +143,35 @@ export function createApp(db) {
     if (!verifyPassword(String(body.current || ''), row.password_hash)) throw new HttpError(400, 'كلمة المرور الحالية غير صحيحة');
     validatePassword(body.password);
     db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hashPassword(body.password), user.id);
+    // sign out every other device; this one stays in
+    const mine = tokenHash(String(parseCookies(req.headers.cookie)[SESSION_COOKIE] || ''));
+    db.prepare('DELETE FROM sessions WHERE user_id = ? AND token_hash != ?').run(user.id, mine);
     return { ok: true };
   }, { auth: true });
 
   // Forgotten password: a 6-digit code to the WhatsApp number on file, valid 10 minutes, 5 tries.
   const resetLimit = rateLimiter({ limit: 10, windowMs: 15 * 60_000 });
   const otpHash = (userId, code) => createHash('sha256').update(`${userId}:${code}`).digest('hex');
+  // one code a minute and five a day per account, so the form can't be used to flood someone's WhatsApp
+  const otpSent = new Map();
+  const otpAllowed = (userId, now = Date.now()) => {
+    const list = (otpSent.get(userId) || []).filter((t) => now - t < DAY);
+    if (list.length >= 5 || (list.length && now - list[list.length - 1] < 60_000)) return false;
+    otpSent.set(userId, [...list, now]);
+    return true;
+  };
   const resetUser = (username) => db.prepare('SELECT * FROM users WHERE username = ? AND active = 1').get(String(username || '').trim().toLowerCase());
   r.post('/api/reset/request', async ({ req }) => {
     if (!resetLimit(clientIp(req))) throw new HttpError(429, 'محاولات كثيرة. حاول بعد ربع ساعة');
     const u = resetUser(parseJson(await readBody(req)).username);
     const phone = u ? (u.role === 'admin' ? getSettings(db).notify.manager_phone : u.phone) : '';
-    if (u && phone) {
+    if (u && phone && otpAllowed(u.id)) {
       const code = String(randomInt(0, 1_000_000)).padStart(6, '0');
+      // a fresh code keeps the wrong guesses of one that is still valid, so re-requesting doesn't reset the count
       db.prepare(`INSERT INTO otp_codes (user_id, code_hash, expires_at, attempts) VALUES (?, ?, ?, 0)
-                  ON CONFLICT(user_id) DO UPDATE SET code_hash = excluded.code_hash, expires_at = excluded.expires_at, attempts = 0`)
-        .run(u.id, otpHash(u.id, code), Date.now() + 10 * 60_000);
+                  ON CONFLICT(user_id) DO UPDATE SET code_hash = excluded.code_hash, expires_at = excluded.expires_at,
+                  attempts = CASE WHEN otp_codes.expires_at > ? THEN otp_codes.attempts ELSE 0 END`)
+        .run(u.id, otpHash(u.id, code), Date.now() + 10 * 60_000, Date.now());
       queue(db, { to: phone, body: msg.otp({ code }), kind: 'otp', userId: u.id });
       flush(db).catch(() => {});
     }
@@ -185,7 +208,7 @@ export function createApp(db) {
     // Stepping out on an approved exit permission: the reason comes from the request.
     let permit = null;
     if (body.type === 'leave' && body.exit_id) {
-      permit = db.prepare("SELECT * FROM leave_requests WHERE id = ? AND user_id = ? AND minutes > 0 AND status = 'approved' AND left_at IS NULL").get(Number(body.exit_id), user.id);
+      permit = db.prepare("SELECT * FROM leave_requests WHERE id = ? AND user_id = ? AND minutes > 0 AND status = 'approved' AND left_at IS NULL AND from_date = ?").get(Number(body.exit_id), user.id, localDate());
       if (!permit) throw new HttpError(400, 'إذن الخروج غير صالح');
       body.note = `بإذن ${permit.minutes} دقيقة: ${permit.reason}`;
     }
@@ -284,7 +307,11 @@ export function createApp(db) {
     requireOps(user);
     const { from, to } = range(url, 31);
     const s = getSettings(db);
-    return { ops: opsRows(db, from, to), stock: stockRows(db, from, to), channels: s.channels, metrics: s.metrics, scans: scanCounts(db, from, to) };
+    // sales amounts and stock invoices are for whoever records them (and the managers), not every daily-numbers employee
+    const sales = isManager(user) || can(user, 'orders') || can(user, 'stock');
+    const ops = opsRows(db, from, to);
+    if (!sales) for (const d of ops) { d.totalAmount = null; for (const c of Object.values(d.channels)) delete c.amount; }
+    return { ops, stock: sales ? stockRows(db, from, to) : [], channels: s.channels, metrics: s.metrics, scans: scanCounts(db, from, to) };
   }, { auth: true });
   r.put('/api/ops/:date', async ({ req, params, user }) => {
     requireOps(user);
@@ -479,6 +506,7 @@ export function createApp(db) {
   }, { auth: true });
   r.put('/api/requests/:id', async ({ req, params, user }) => {
     requireManager(user);
+    notSelf(user, db.prepare('SELECT user_id FROM requests WHERE id = ?').get(Number(params.id))?.user_id);
     const b = parseJson(await readBody(req));
     return decideRequest(db, user, Number(params.id), b.status, b.response);
   }, { auth: true });
@@ -532,6 +560,7 @@ export function createApp(db) {
   }, { auth: true });
   r.put('/api/leaves/:id', async ({ req, params, user }) => {
     requireManager(user);
+    notSelf(user, db.prepare('SELECT user_id FROM leave_requests WHERE id = ?').get(Number(params.id))?.user_id);
     const b = parseJson(await readBody(req));
     return decideLeave(db, user, Number(params.id), b.status, b.response);
   }, { auth: true });
@@ -570,10 +599,13 @@ export function createApp(db) {
   }, { auth: true });
   r.post('/api/punches', async ({ req, user }) => {
     requireManager(user);
-    return { id: managerPunch(db, user, parseJson(await readBody(req))) };
+    const b = parseJson(await readBody(req));
+    notSelf(user, b.user_id);
+    return { id: managerPunch(db, user, b) };
   }, { auth: true });
   r.delete('/api/punches/:id', async ({ req, params, user }) => {
     requireManager(user);
+    notSelf(user, db.prepare('SELECT user_id FROM punches WHERE id = ?').get(Number(params.id))?.user_id);
     voidPunch(db, user, params.id, parseJson(await readBody(req)).reason);
     return { ok: true };
   }, { auth: true });
@@ -588,7 +620,7 @@ export function createApp(db) {
     const auditRows = db.prepare(`SELECT a.*, u.name AS actor_name, t.name AS target_name FROM audit_log a
                                   LEFT JOIN users u ON u.id = a.actor_id LEFT JOIN users t ON t.id = a.target_user_id
                                   ORDER BY a.ts DESC LIMIT 200`).all();
-    return { punches, days, audit: auditRows, labels: FLAG_LABELS };
+    return { punches, days, audit: auditFor(user, auditRows), labels: FLAG_LABELS };
   }, { auth: true });
   r.get('/api/excuses', ({ url, user }) => {
     requireManager(user);
@@ -608,6 +640,8 @@ export function createApp(db) {
     if (to < from || addDays(from, 60) < to) throw new HttpError(400, 'المدة غير صحيحة (60 يوماً كحد أقصى)');
     const userId = kind === 'holiday' ? null : Number(b.user_id);
     if (kind !== 'holiday' && !db.prepare("SELECT 1 FROM users WHERE id = ? AND role = 'employee'").get(userId)) throw new HttpError(400, 'اختر الموظف');
+    if (kind === 'holiday' && user.role !== 'admin') throw new HttpError(403, 'العطلات الرسمية يضيفها المدير');
+    notSelf(user, userId);
     tx(db, () => {
       for (let d = from; d <= to; d = addDays(d, 1)) {
         db.prepare(`DELETE FROM excuses WHERE date = ? AND ${userId === null ? 'user_id IS NULL' : 'user_id = ?'}`).run(d, ...(userId === null ? [] : [userId]));
@@ -621,6 +655,8 @@ export function createApp(db) {
     requireManager(user);
     const e = db.prepare('SELECT * FROM excuses WHERE id = ?').get(Number(params.id));
     if (!e) throw new HttpError(404, 'غير موجود');
+    if (e.user_id === null && user.role !== 'admin') throw new HttpError(403, 'العطلات الرسمية يعدّلها المدير');
+    notSelf(user, e.user_id);
     db.prepare('DELETE FROM excuses WHERE id = ?').run(e.id);
     audit(db, user.id, 'excuse.delete', e.user_id, e);
     return { ok: true };
@@ -697,7 +733,7 @@ export function createApp(db) {
   }, { auth: true });
   r.post('/api/payroll/payslips', async ({ req, user }) => {
     requireAdmin(user);
-    return { ok: true, sent: sendPayslips(db, needMonth(parseJson(await readBody(req)).month)) };
+    return { ok: true, sent: sendPayslips(db, needMonth(parseJson(await readBody(req)).month), { again: true }) };
   }, { auth: true });
   r.delete('/api/payroll/close/:month', ({ params, user }) => {
     requireAdmin(user);
@@ -923,13 +959,14 @@ export function createApp(db) {
     requireManager(user);
     const date = needDate(url.searchParams.get('date'), localDate());
     let pdf;
-    try { pdf = await dailyPdf(db, date); } catch (e) { throw new HttpError(503, `تعذّر إنشاء PDF: ${e.message}`); }
+    try { pdf = await dailyPdf(db, date, { money: user.role === 'admin' }); } catch (e) { console.error('daily pdf', e.message); throw new HttpError(503, 'تعذّر إنشاء PDF الآن. جرّب بعد قليل'); }
     send(res, 200, pdf, { 'Content-Type': 'application/pdf', 'Content-Disposition': `attachment; filename="wareef-daily-${date}.pdf"` });
   }, { auth: true, page: true });
   r.get('/report/daily', ({ url, res, user }) => {
     requireManager(user);
     const date = needDate(url.searchParams.get('date'), localDate());
-    send(res, 200, renderDailyReport(dailyReport(db, date)), { 'Content-Type': 'text/html; charset=utf-8', ...SECURITY_HEADERS });
+    const rep = dailyReport(db, date);
+    send(res, 200, renderDailyReport(user.role === 'admin' ? rep : withoutMoney(rep)), { 'Content-Type': 'text/html; charset=utf-8', ...SECURITY_HEADERS });
   }, { auth: true, page: true });
 
   // Payslip: employees see their own once the month is closed; the manager sees anyone's, closed or not.
@@ -1035,5 +1072,16 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   const backup = () => dailyBackup(db).catch((e) => console.error('backup failed', e));
   backup();
   setInterval(backup, 6 * 3600_000).unref();
-  createServer(createApp(db)).listen(config.port, () => console.log(`نظام وريف للموظفين يعمل على http://localhost:${config.port}`));
+  const server = createServer(createApp(db)).listen(config.port, () => console.log(`نظام وريف للموظفين يعمل على http://localhost:${config.port}`));
+  // one bad promise must not take the whole system down; log it and keep serving
+  process.on('unhandledRejection', (e) => console.error('unhandled rejection', e));
+  process.on('uncaughtException', (e) => console.error('uncaught exception', e));
+  // a redeploy sends SIGTERM: finish cleanly so the database and the WhatsApp login aren't cut mid-write
+  const stop = () => {
+    waShutdown();
+    server.close();
+    setTimeout(() => { try { db.close(); } catch { /* already closed */ } process.exit(0); }, 1500).unref();
+  };
+  process.once('SIGTERM', stop);
+  process.once('SIGINT', stop);
 }

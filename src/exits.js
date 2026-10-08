@@ -41,15 +41,17 @@ export function startExit(db, user, id, now = Date.now()) {
   if (!q) throw new HttpError(404, 'طلب الخروج غير موجود');
   if (q.status !== 'approved') throw new HttpError(400, q.status === 'pending' ? 'طلبك بانتظار موافقة المدير' : 'طلب الخروج مرفوض');
   if (q.left_at) throw new HttpError(400, 'استخدمت هذا الإذن مسبقاً');
+  if (q.from_date !== localDate(now)) throw new HttpError(400, 'هذا الإذن لليوم اللي طلبته فيه فقط. اطلب إذناً جديداً');
+  // the window ends at midnight at the latest (a wrap past 00:00 would make it empty)
   db.prepare('UPDATE leave_requests SET left_at = ?, from_time = ?, to_time = ?, updated_at = ? WHERE id = ?')
-    .run(now, hhmm(now), hhmm(now + q.minutes * MIN), now, q.id);
+    .run(now, hhmm(now), hhmm(Math.min(now + q.minutes * MIN, at(localDate(now), '23:59'))), now, q.id);
   return { ...q, left_at: now };
 }
 
 /** On "back": closes the open approved exit, if any. Returns the outing, or null. */
 export function endExit(db, user, now = Date.now()) {
   const q = db.prepare(`SELECT * FROM leave_requests WHERE user_id = ? AND kind = 'permission' AND minutes > 0 AND status = 'approved'
-                        AND left_at IS NOT NULL AND back_at IS NULL ORDER BY id DESC LIMIT 1`).get(user.id);
+                        AND left_at IS NOT NULL AND back_at IS NULL AND from_date = ? ORDER BY id DESC LIMIT 1`).get(user.id, localDate(now));
   if (!q) return null;
   db.prepare('UPDATE leave_requests SET back_at = ?, updated_at = ? WHERE id = ?').run(now, now, q.id);
   const used = Math.max(0, Math.round((now - q.left_at) / MIN));

@@ -13,11 +13,11 @@
 //     WHATSAPP_TO_FORMAT=plain | plus | jid   (966..., +966..., 966...@c.us; default plain)
 //     WHATSAPP_EXTRA={"instance_id":"..."}   (extra JSON fields merged into the body)
 //     WHATSAPP_FORMAT=json | form            (default json)
-import { MIN } from './config.js';
+import { DAY, MIN } from './config.js';
 import { localDate, localTime, at } from './time.js';
 import { getSettings } from './settings.js';
 import { loadAttendance } from './attendance.js';
-import { dailyReport, opsRows } from './reports.js';
+import { dailyReport, withoutMoney, opsRows } from './reports.js';
 import { renderDailyReport } from './print.js';
 import { htmlToPdf } from './pdf.js';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
@@ -165,6 +165,9 @@ export function notifyUsersWithPerm(db, perm, kind, bodyFor, key) {
 }
 
 /** Send whatever is pending. Called every few seconds; one message at a time to stay gentle with the provider. */
+/** A send that never settles (a stuck socket, a hung PDF render) must not freeze the queue for good. */
+const withTimeout = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(Object.assign(new Error('انتهت مهلة الإرسال'), { defer: true })), ms).unref())]);
+
 let sending = false;
 export async function flush(db, send = deliver) {
   if (sending) return 0;
@@ -177,8 +180,10 @@ export async function flush(db, send = deliver) {
     const rows = db.prepare("SELECT * FROM notifications WHERE status = 'pending' AND attempts < 3 ORDER BY id LIMIT 20").all();
     for (const n of rows) {
       try {
-        await send(n.to_phone, n.body, n, db);
+        await withTimeout(send(n.to_phone, n.body, n, db), 90_000);
         db.prepare("UPDATE notifications SET status = 'sent', sent_at = ?, attempts = attempts + 1, error = NULL WHERE id = ?").run(Date.now(), n.id);
+        // a password code has done its job once delivered; don't keep it readable in the log or the backups
+        if (n.kind === 'otp') db.prepare("UPDATE notifications SET body = '🔐 رمز تحقق (مخفي)' WHERE id = ?").run(n.id);
         sent++;
       } catch (e) {
         if (e.defer) break; // link temporarily down: leave the queue untouched and try again later
@@ -212,11 +217,11 @@ export function tick(db, now = Date.now()) {
         const start = at(date, p.start);
         const end = at(date, p.end);
         const next = r.periods[i + 1];
-        if (within(start - before) && !p.firstIn) {
+        if (within(start - before) && r.liveState !== 'in') { // already in (early, or stayed through the break): no alarm
           queue(db, { to, userId: r.userId, kind: 'alarm_start', key: `alarm_start:${r.userId}:${date}:${p.id}`,
             body: msg.alarmStart({ name: r.name, period: p.name, start: p.start, now: nowHHMM, grace: s.grace_minutes, link }) });
         }
-        if (within(end)) {
+        if (within(end) && r.liveState === 'in') { // absent or already out: nothing to remind
           queue(db, { to, userId: r.userId, kind: next ? 'alarm_break' : 'alarm_end', key: `alarm_end:${r.userId}:${date}:${p.id}`,
             body: next
               ? msg.alarmBreak({ name: r.name, period: p.name, nextStart: next.start, link })
@@ -227,7 +232,8 @@ export function tick(db, now = Date.now()) {
     for (const p of r.periods) {
       const start = at(date, p.start);
       const end = at(date, p.end);
-      const notArrived = p.state === 'not_arrived' || (p.state === 'running' && !p.firstIn);
+      // not here and not on an approved permission covering the time
+      const notArrived = p.state === 'not_arrived' || (p.state === 'running' && !p.firstIn && !p.permitted);
       if (notArrived && now >= start + after && now < end) {
         if (n.remind_staff) {
           queue(db, { to: phoneOf(db, r.userId), userId: r.userId, kind: 'remind_in', key: `remind_in:${r.userId}:${date}:${p.id}`,
@@ -245,12 +251,15 @@ export function tick(db, now = Date.now()) {
         body: msg.remindOut({ name: r.name, end: last.end, link }) });
     }
   }
-  if (n.daily_summary && n.manager_phone && localTime(now) >= n.summary_time) {
+  if (n.daily_summary && n.manager_phone && localTime(now) >= n.summary_time && !queued(db, `summary:${date}`)) {
     queue(db, { to: n.manager_phone, kind: 'summary', key: `summary:${date}`, body: dailySummary(db, date, rows, s) });
   }
 }
 
-export const dailyPdf = (db, date) => htmlToPdf(renderDailyReport(dailyReport(db, date)));
+export const dailyPdf = (db, date, { money = true } = {}) => {
+  const rep = dailyReport(db, date);
+  return htmlToPdf(renderDailyReport(money ? rep : withoutMoney(rep)));
+};
 
 /** Short caption for the PDF: the numbers you want to see without opening it. */
 export function summaryCaption(db, date) {
@@ -327,10 +336,24 @@ export function backupTick(db, now = Date.now()) {
   return queue(db, { to: n.manager_phone, kind: 'backup', key: `backup:${date}`, body: msg.backupCaption({ date }) });
 }
 
+/** Already queued under this key? (checked before building a heavy message every minute) */
+export const queued = (db, key) => !!db.prepare('SELECT 1 FROM notifications WHERE dedupe_key = ?').get(key);
+
+/** Once a day: old delivered messages and once-only marks go, so the database doesn't grow forever. */
+export function pruneTick(db, now = Date.now()) {
+  if (localTime(now) !== '04:10') return 0;
+  const r = db.prepare("DELETE FROM notifications WHERE created_at < ? AND status != 'pending'").run(now - 90 * DAY);
+  db.prepare('DELETE FROM push_sent WHERE ts < ?').run(now - 3 * DAY);
+  db.prepare('DELETE FROM sessions WHERE expires_at < ?').run(now);
+  db.prepare('DELETE FROM otp_codes WHERE expires_at < ?').run(now);
+  return r.changes;
+}
+
 export function startNotifier(db, jobs = []) {
   const safe = (fn) => () => { try { const r = fn(); if (r?.catch) r.catch((e) => console.error('notify', e)); } catch (e) { console.error('notify', e); } };
   setInterval(safe(() => tick(db)), 60_000).unref();
   setInterval(safe(() => backupTick(db)), 60_000).unref();
+  setInterval(safe(() => pruneTick(db)), 60_000).unref();
   for (const job of jobs) setInterval(safe(() => job(db)), 60_000).unref();
   setInterval(safe(() => flush(db)), 15_000).unref();
 }

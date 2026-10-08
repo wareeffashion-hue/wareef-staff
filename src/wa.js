@@ -35,6 +35,19 @@ export const waConnected = () => wa.status === 'connected' && !!sock;
 export const waQrSvg = () => (wa.qr ? QR.toString(wa.qr, { type: 'svg', margin: 1, color: { dark: '#17131f', light: '#ffffff' } }) : Promise.resolve(null));
 export const waHasSession = () => existsSync(join(authDir(), 'creds.json'));
 
+let waVersion = null;
+/** Try again later; a failed restart schedules the next one instead of leaving WhatsApp off for good. */
+function retryLater() {
+  retries++;
+  setTimeout(() => waStart().catch((e) => { wa.error = e.message; if (waHasSession() && !stopped) retryLater(); }), Math.min(60_000, 1500 * 2 ** Math.min(retries, 5))).unref?.();
+}
+
+/** Closing the app (a redeploy): end the socket cleanly so the saved login isn't cut mid-write. */
+export function waShutdown() {
+  stopped = true;
+  try { sock?.end?.(undefined); } catch { /* closing anyway */ }
+}
+
 export async function waStart() {
   if (sock || starting) return;
   starting = true;
@@ -44,8 +57,9 @@ export async function waStart() {
     const pino = (await import('pino')).default;
     await mkdir(authDir(), { recursive: true });
     const { state, saveCreds } = await B.useMultiFileAuthState(authDir());
-    let version;
-    try { ({ version } = await B.fetchLatestBaileysVersion()); } catch { /* use the bundled version */ }
+    // ask WhatsApp for the current protocol version once per run, not on every reconnect
+    if (!waVersion) { try { ({ version: waVersion } = await B.fetchLatestBaileysVersion()); } catch { /* use the bundled version */ } }
+    const version = waVersion;
     wa.status = 'connecting';
     const s = B.makeWASocket({
       auth: state,
@@ -56,7 +70,7 @@ export async function waStart() {
       markOnlineOnConnect: false,
     });
     sock = s;
-    s.ev.on('creds.update', saveCreds);
+    s.ev.on('creds.update', () => saveCreds().catch((e) => console.error('whatsapp creds', e.message)));
     s.ev.on('messages.upsert', async ({ messages, type }) => {
       if (!onIncoming || (type !== 'notify' && type !== 'append')) return;
       for (const m of messages) {
@@ -65,6 +79,7 @@ export async function waStart() {
           // Only fresh messages: never act on history that syncs after a reconnect.
           if (Date.now() / 1000 - Number(m.messageTimestamp || 0) > 300) continue;
           if (type === 'append' && !m.key?.fromMe) continue;
+          if (String(m.key?.remoteJid || '').endsWith('@g.us')) continue; // commands only from a private chat, never a group
           const text = textOf(m).trim();
           if (!text) continue;
           const phone = phoneOfKey(m.key);
@@ -102,8 +117,9 @@ export async function waStart() {
         // While waiting for a scan the QR expires every minute or so; reconnect to get a new one.
         wa.status = waHasSession() ? 'connecting' : 'qr';
         wa.error = u.lastDisconnect?.error?.message || null;
-        retries++;
-        setTimeout(() => waStart().catch((e) => { wa.error = e.message; }), Math.min(60_000, 1500 * 2 ** Math.min(retries, 5)));
+        // nobody scanned the code for a long while: stop asking until someone presses "ربط" again
+        if (!waHasSession() && retries >= 15) { wa.status = 'off'; wa.qr = null; wa.error = 'انتهت مهلة مسح الرمز. اضغط ربط واتساب من جديد'; retries = 0; return; }
+        retryLater();
       }
     });
   } catch (e) {

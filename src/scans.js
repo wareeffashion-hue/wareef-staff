@@ -1,7 +1,7 @@
 // Barcode scanning: each scanned label is one shipment out or one customer return in.
 // The scanner types the code and presses Enter, like a keyboard. A code counts once per kind.
 // The day's count replaces the manual number ("الشحنات المرسلة" / "مرتجعات دخلت المستودع").
-import { audit } from './db.js';
+import { audit, tx } from './db.js';
 import { HttpError } from './http.js';
 import { localDate, localTime } from './time.js';
 import { matchReturn, unmatchScan } from './exchanges.js';
@@ -19,10 +19,14 @@ export function cleanCode(raw) {
 }
 
 /** The metric for that day = the number of scans, recorded by whoever scanned last. */
-export function syncMetric(db, date, kind, userId) {
+export function syncMetric(db, date, kind, userId, before = null) {
   const n = db.prepare('SELECT COUNT(*) n FROM scans WHERE date = ? AND kind = ?').get(date, kind).n;
   const key = SCAN_METRIC[kind];
-  if (!n) { db.prepare('DELETE FROM daily_metrics WHERE date = ? AND key = ?').run(date, key); return 0; }
+  if (!n) {
+    // the last scan was undone: clear the number only if it was the scans' count, never a number typed by hand
+    if (before !== null) db.prepare('DELETE FROM daily_metrics WHERE date = ? AND key = ? AND value = ?').run(date, key, before);
+    return 0;
+  }
   db.prepare(`INSERT INTO daily_metrics (date, key, value, note, updated_by, updated_at) VALUES (?, ?, ?, '', ?, ?)
               ON CONFLICT(date, key) DO UPDATE SET value = excluded.value, updated_by = excluded.updated_by, updated_at = excluded.updated_at`)
     .run(date, key, n, userId, Date.now());
@@ -52,10 +56,13 @@ export function removeScan(db, user, id, isManager, now = Date.now()) {
   const s = db.prepare('SELECT * FROM scans WHERE id = ?').get(Number(id));
   if (!s) throw new HttpError(404, 'غير موجود');
   if (!isManager && (s.user_id !== user.id || now - s.ts > UNDO_MS)) throw new HttpError(403, 'تقدر تلغي مسحك خلال 10 دقائق فقط. للأقدم تواصل مع المدير');
-  db.prepare('DELETE FROM scans WHERE id = ?').run(s.id);
-  unmatchScan(db, s.id);
-  audit(db, user.id, 'scan.delete', s.user_id, { kind: s.kind, code: s.code, date: s.date });
-  return { ok: true, count: syncMetric(db, s.date, s.kind, user.id) };
+  return tx(db, () => {
+    const before = db.prepare('SELECT COUNT(*) n FROM scans WHERE date = ? AND kind = ?').get(s.date, s.kind).n;
+    db.prepare('DELETE FROM scans WHERE id = ?').run(s.id);
+    unmatchScan(db, s.id);
+    audit(db, user.id, 'scan.delete', s.user_id, { kind: s.kind, code: s.code, date: s.date });
+    return { ok: true, count: syncMetric(db, s.date, s.kind, user.id, before) };
+  });
 }
 
 export function scanList(db, date, kind = null) {

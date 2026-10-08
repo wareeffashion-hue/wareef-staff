@@ -123,13 +123,28 @@ test('shift alarms: before start, at break, at end of day, each once', () => {
   tick(db, at(SAT, '06:51'));
   assert.equal(alarms().length, 1);
   assert.match(alarms()[0].body, /تبدأ الساعة \*07:00\*/);
+  // an employee who isn't in gets no break/end alarm
   tick(db, at(SAT, '12:20'));
-  assert.match(alarms().at(-1).body, /وقت الاستراحة[\s\S]*13:00/);
-  tick(db, at(SAT, '12:50'));
-  assert.match(alarms().at(-1).body, /منبّه الفترة المسائية[\s\S]*\*13:00\*/);
-  tick(db, at(SAT, '21:00'));
-  assert.match(alarms().at(-1).body, /انتهى دوامك/);
-  assert.equal(alarms().length, 4);
+  assert.equal(alarms().length, 1);
+  const db3 = setup();
+  const ali = db3.prepare("SELECT id FROM users WHERE username = 'ali'").get().id;
+  const punch = (time, type) => db3.prepare('INSERT INTO punches (user_id, date, ts, type, created_at) VALUES (?, ?, ?, ?, ?)').run(ali, SAT, at(SAT, time), type, at(SAT, time));
+  punch('06:58', 'in');
+  tick(db3, at(SAT, '12:20'));
+  assert.match(all(db3).filter((x) => x.kind.startsWith('alarm')).at(-1).body, /وقت الاستراحة[\s\S]*13:00/);
+  punch('12:21', 'out');
+  tick(db3, at(SAT, '12:50'));
+  assert.match(all(db3).filter((x) => x.kind.startsWith('alarm')).at(-1).body, /منبّه الفترة المسائية[\s\S]*\*13:00\*/);
+  punch('12:58', 'in');
+  tick(db3, at(SAT, '21:00'));
+  assert.match(all(db3).filter((x) => x.kind.startsWith('alarm')).at(-1).body, /انتهى دوامك/);
+  assert.equal(all(db3).filter((x) => x.kind.startsWith('alarm')).length, 3);
+  // already in before the start: no "your shift starts" alarm
+  const db4 = setup();
+  const ali4 = db4.prepare("SELECT id FROM users WHERE username = 'ali'").get().id;
+  db4.prepare('INSERT INTO punches (user_id, date, ts, type, created_at) VALUES (?, ?, ?, ?, ?)').run(ali4, SAT, at(SAT, '06:40'), 'in', at(SAT, '06:40'));
+  tick(db4, at(SAT, '06:51'));
+  assert.equal(all(db4).filter((x) => x.kind === 'alarm_start').length, 0);
   // a server that comes back late does not send stale alarms
   const db2 = setup();
   tick(db2, at(SAT, '12:40'));

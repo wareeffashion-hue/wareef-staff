@@ -41,11 +41,14 @@ export function send(res, status, body, headers = {}) {
   res.end(raw ? body : JSON.stringify(body));
 }
 
+/** A malformed %-escape is just text, not a crash. */
+const safeDecode = (v) => { try { return decodeURIComponent(v); } catch { return v; } };
+
 export function parseCookies(header = '') {
   const out = {};
   for (const part of header.split(';')) {
     const i = part.indexOf('=');
-    if (i > 0) out[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim());
+    if (i > 0) out[part.slice(0, i).trim()] = safeDecode(part.slice(i + 1).trim());
   }
   return out;
 }
@@ -86,7 +89,7 @@ export class Router {
       if (!m) continue;
       pathMatched = true;
       if (r.method !== method) continue;
-      const params = Object.fromEntries(r.keys.map((k, i) => [k, decodeURIComponent(m[i + 1])]));
+      const params = Object.fromEntries(r.keys.map((k, i) => [k, safeDecode(m[i + 1])]));
       return { handler: r.handler, params, opts: r.opts };
     }
     return pathMatched ? { methodNotAllowed: true } : null;

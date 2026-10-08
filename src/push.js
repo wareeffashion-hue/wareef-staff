@@ -16,11 +16,17 @@ export function vapidKeys(db) {
   return keys;
 }
 
+/** Only the browsers' real push services: Chrome/Android (FCM), Apple, Firefox, Edge/Windows. */
+const PUSH_HOST = /^https:\/\/(fcm\.googleapis\.com|android\.googleapis\.com|[a-z0-9.-]*\.push\.apple\.com|[a-z0-9.-]*push\.services\.mozilla\.com|[a-z0-9.-]*\.notify\.windows\.com)\//;
+
 export function saveSubscription(db, userId, sub, userAgent = '') {
   const endpoint = String(sub?.endpoint || '');
   const p256dh = String(sub?.keys?.p256dh || '');
   const auth = String(sub?.keys?.auth || '');
-  if (!/^https:\/\//.test(endpoint) || !p256dh || !auth) throw Object.assign(new Error('اشتراك غير صالح'), { status: 400 });
+  if (!PUSH_HOST.test(endpoint) || endpoint.length > 1000 || !p256dh || !auth) throw Object.assign(new Error('اشتراك غير صالح'), { status: 400 });
+  // a handful of devices per person is plenty; drop the oldest beyond that
+  const extra = db.prepare('SELECT id FROM push_subscriptions WHERE user_id = ? AND endpoint != ? ORDER BY created_at DESC LIMIT -1 OFFSET 7').all(userId, endpoint);
+  for (const r of extra) db.prepare('DELETE FROM push_subscriptions WHERE id = ?').run(r.id);
   db.prepare(`INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth, user_agent, created_at) VALUES (?, ?, ?, ?, ?, ?)
               ON CONFLICT(endpoint) DO UPDATE SET user_id = excluded.user_id, p256dh = excluded.p256dh, auth = excluded.auth, fails = 0`)
     .run(userId, endpoint, p256dh, auth, String(userAgent).slice(0, 200), Date.now());
@@ -69,8 +75,11 @@ export function pushTo(db, { userId = null, kind, body, key = null }) {
       .then(() => sender({ endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth } }, payload, opts))
       .then(() => db.prepare('UPDATE push_subscriptions SET last_ok_at = ?, fails = 0 WHERE id = ?').run(Date.now(), s.id))
       .catch((e) => {
-        if (e?.statusCode === 404 || e?.statusCode === 410) db.prepare('DELETE FROM push_subscriptions WHERE id = ?').run(s.id);
-        else { db.prepare('UPDATE push_subscriptions SET fails = fails + 1 WHERE id = ?').run(s.id); console.error('push', e?.statusCode || '', e?.message); }
+        try {
+          // gone, or failing for days: forget the device (the app re-subscribes it next time it opens)
+          if (e?.statusCode === 404 || e?.statusCode === 410) db.prepare('DELETE FROM push_subscriptions WHERE id = ?').run(s.id);
+          else { db.prepare('UPDATE push_subscriptions SET fails = fails + 1 WHERE id = ?').run(s.id); db.prepare('DELETE FROM push_subscriptions WHERE id = ? AND fails > 20').run(s.id); console.error('push', e?.statusCode || '', e?.message); }
+        } catch (err) { console.error('push cleanup', err.message); }
       });
   }
   // keep the once-only log short

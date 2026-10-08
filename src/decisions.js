@@ -45,9 +45,10 @@ export function decideRequest(db, manager, id, status, response) {
   audit(db, manager.id, 'request.update', q.user_id, { id: q.id, status: next });
   if (next !== q.status) {
     const base = { id: q.id, kind: q.kind, sku: q.sku, qty: q.quantity, status: next, response: resp.slice(0, 300), link: appLink(db) };
-    notifyEmployee(db, q.user_id, 'request_status', msg.requestStatus(base), `request:${q.id}:${next}:${q.user_id}`);
+    const at = Date.now(); // in the key so the same status set again later is announced again
+    notifyEmployee(db, q.user_id, 'request_status', msg.requestStatus(base), `request:${q.id}:${next}:${at}:${q.user_id}`);
     for (const perm of ['stock', 'requests']) {
-      notifyUsersWithPerm(db, perm, 'request_status', (uid) => (uid === q.user_id ? null : msg.requestStatus({ ...base, by: q.user_name })), `request:${q.id}:${next}`);
+      notifyUsersWithPerm(db, perm, 'request_status', (uid) => (uid === q.user_id ? null : msg.requestStatus({ ...base, by: q.user_name })), `request:${q.id}:${next}:${at}`);
     }
   }
   return { ok: true, request: { ...q, status: next, response: resp } };

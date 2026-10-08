@@ -25,7 +25,8 @@ export function performance(db, month, now = Date.now(), { withPrevious = true }
     const a = att.find((x) => x.userId === u.id) || { workDays: 0, presentDays: 0, absentDays: 0, excusedDays: 0, lateDays: 0, lateMinutes: 0, earlyMinutes: 0, exitMinutes: 0, presentMinutes: 0 };
     const perms = JSON.parse(u.perms || '[]');
     const expected = Math.max(0, a.workDays - a.excusedDays);
-    const rate = expected ? (a.presentDays / expected) * 100 : 0;
+    // days worked on a day off don't push the rate past 100% (that would hide lateness)
+    const rate = expected ? Math.min(100, (a.presentDays / expected) * 100) : 0;
     const commitment = expected ? round(clamp(rate - Math.min(30, a.lateMinutes / 10) - Math.min(20, (a.exitMinutes + a.earlyMinutes) / 15))) : null;
 
     const metrics = db.prepare(`SELECT key, SUM(value) total, COUNT(*) days FROM daily_metrics WHERE updated_by = ? AND date BETWEEN ? AND ? GROUP BY key`).all(u.id, from, to)

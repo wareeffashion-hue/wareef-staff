@@ -72,12 +72,13 @@ export function debtRows(db, userId = null) {
                      ${userId ? 'WHERE d.user_id = ?' : ''} ORDER BY d.date DESC, d.id DESC`).all(...(userId ? [userId] : []));
 }
 
-export function debtBalances(db) {
+/** Loan balances; `upTo` (a date) counts only movements up to that day, e.g. a month's payslip. */
+export function debtBalances(db, upTo = null) {
   return db.prepare(`SELECT u.id AS user_id, u.name,
                        COALESCE(SUM(CASE WHEN d.kind = 'loan' THEN d.amount END), 0) AS loans,
                        COALESCE(SUM(CASE WHEN d.kind = 'repayment' THEN d.amount END), 0) AS repaid
-                     FROM users u LEFT JOIN debts d ON d.user_id = u.id
-                     WHERE u.role = 'employee' GROUP BY u.id ORDER BY u.id`).all()
+                     FROM users u LEFT JOIN debts d ON d.user_id = u.id ${upTo ? 'AND d.date <= ?' : ''}
+                     WHERE u.role = 'employee' GROUP BY u.id ORDER BY u.id`).all(...(upTo ? [upTo] : []))
     .map((r) => ({ ...r, loans: round2(r.loans), repaid: round2(r.repaid), balance: round2(r.loans - r.repaid) }));
 }
 
@@ -85,10 +86,15 @@ export function debtBalances(db) {
 export function payroll(db, month, now = Date.now()) {
   const { from, to } = monthBounds(month);
   const att = summarize(loadAttendance(db, { from, to, now }));
-  const users = db.prepare("SELECT id, name, salary FROM users WHERE role = 'employee' AND active = 1 ORDER BY id").all();
+  // a deactivated employee still gets paid for the month if anything happened for them in it
+  const users = db.prepare(`SELECT id, name, salary FROM users u WHERE role = 'employee' AND (active = 1
+                              OR EXISTS (SELECT 1 FROM punches p WHERE p.user_id = u.id AND p.voided = 0 AND p.date BETWEEN ? AND ?)
+                              OR EXISTS (SELECT 1 FROM deductions x WHERE x.user_id = u.id AND x.date BETWEEN ? AND ?)
+                              OR EXISTS (SELECT 1 FROM debts x WHERE x.user_id = u.id AND x.date BETWEEN ? AND ?)) ORDER BY id`)
+    .all(from, to, from, to, from, to);
   const ded = db.prepare('SELECT user_id, SUM(amount) s FROM deductions WHERE date BETWEEN ? AND ? GROUP BY user_id').all(from, to);
   const rep = db.prepare("SELECT user_id, SUM(amount) s FROM debts WHERE kind = 'repayment' AND from_salary = 1 AND date BETWEEN ? AND ? GROUP BY user_id").all(from, to);
-  const bal = new Map(debtBalances(db).map((b) => [b.user_id, b.balance]));
+  const bal = new Map(debtBalances(db, to).map((b) => [b.user_id, b.balance]));
   const dMap = new Map(ded.map((r) => [r.user_id, r.s]));
   const rMap = new Map(rep.map((r) => [r.user_id, r.s]));
   return users.map((u) => {
@@ -106,6 +112,9 @@ export function payroll(db, month, now = Date.now()) {
 }
 
 /** Everything that happened on one day, for the dashboard and the daily report. */
+/** The daily report without deductions and loans (for supervisors). */
+export const withoutMoney = (rep) => ({ ...rep, money: false, deductions: [], debts: [] });
+
 export function dailyReport(db, date, now = Date.now()) {
   const attendance = loadAttendance(db, { from: date, to: date, now });
   const punches = db.prepare(`SELECT p.id, p.user_id, p.ts, p.type, p.note, p.source, p.flags, p.voided, p.ip, p.lat, p.lng, u.name AS user_name
@@ -130,7 +139,9 @@ export function dailyReport(db, date, now = Date.now()) {
 
 // ------------------------------------------------------------------ CSV
 const cell = (v) => {
-  const s = v === null || v === undefined ? '' : String(v);
+  let s = v === null || v === undefined ? '' : String(v);
+  // a typed "=..." / "+..." would run as a formula in Excel; a leading quote keeps it plain text
+  if (typeof v === 'string' && /^[=+\-@\t\r]/.test(s)) s = `'${s}`;
   return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 };
 

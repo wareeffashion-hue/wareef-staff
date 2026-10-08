@@ -60,8 +60,10 @@ export function addExchange(db, user, body, now = Date.now()) {
   audit(db, user.id, 'exchange.add', null, { id, tracking });
   notifyActivity(db, 'exchange_new', msg.mgrExchangeNew({ name: user.name, kind: EX_KINDS[kind], tracking, order: row.order_no, customer: row.customer }));
   // the warehouse may have scanned it before it was registered
-  const scan = db.prepare('SELECT s.*, u.name AS user_name FROM scans s LEFT JOIN users u ON u.id = s.user_id WHERE s.kind = ? ORDER BY s.ts DESC').all('return')
-    .find((s) => normTrack(s.code) === tracking);
+  // compared in SQL (spaces, dashes and case ignored) instead of loading every return ever scanned
+  const scan = db.prepare(`SELECT s.*, u.name AS user_name FROM scans s LEFT JOIN users u ON u.id = s.user_id
+                           WHERE s.kind = 'return' AND UPPER(REPLACE(REPLACE(REPLACE(s.code, ' ', ''), '-', ''), '_', '')) = ?
+                           ORDER BY s.ts DESC LIMIT 1`).get(tracking);
   const e = db.prepare('SELECT * FROM exchanges WHERE id = ?').get(id);
   if (scan) receive(db, e, scan, scan.user_id ? { id: scan.user_id, name: scan.user_name } : null, now);
   return { ok: true, exchange: getExchange(db, id, now) };

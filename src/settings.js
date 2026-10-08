@@ -123,7 +123,8 @@ export function saveSettings(db, patch) {
     if (!next.channels.length) throw new HttpError(400, 'أضف قناة طلبات واحدة على الأقل');
   }
   if ('notify' in patch) {
-    const n = patch.notify || {};
+    // fields not sent keep their current value (a partial save must not switch things off)
+    const n = { ...cur.notify, ...(patch.notify || {}) };
     const phone = String(n.manager_phone || '').replace(/\D/g, '');
     if (phone && !/^\d{9,15}$/.test(phone)) throw new HttpError(400, 'رقم جوال المدير غير صحيح');
     if (n.summary_time && !HHMM.test(n.summary_time)) throw new HttpError(400, 'وقت الملخص اليومي غير صحيح');

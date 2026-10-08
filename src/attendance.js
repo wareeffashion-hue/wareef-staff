@@ -75,7 +75,11 @@ export function computeDay({ date, punches, periods, excuse = null, grace = 0, m
     if (isToday) exits.push([leave.ts, Math.max(leave.ts, now), leave.note]);
     else { flags.add('no_return'); liveState = 'out'; }
   }
-  for (const [s, e] of exits) if (e - s > maxExit * MIN) flags.add('long_exit');
+  // a long exit counts only for the part not covered by an approved permission
+  for (const [s, e] of exits) {
+    const permitted = merge(permits.map(([a, b]) => [Math.max(a, s), Math.min(b, e)]).filter(([a, b]) => b > a)).reduce((t, [a, b]) => t + (b - a), 0);
+    if (e - s - permitted > maxExit * MIN) flags.add('long_exit');
+  }
 
   const graceMs = grace * MIN;
   const out = periods.map((p) => {
@@ -96,14 +100,14 @@ export function computeDay({ date, punches, periods, excuse = null, grace = 0, m
       if (e <= now) { row.absent = true; return row; }
       // Period is running and the employee hasn't arrived yet.
       row.state = 'not_arrived';
-      if (now - s > graceMs) row.late = mins(now - s);
+      if (mins(now - s) > grace) row.late = mins(now - s);
       return row;
     }
     const lateMs = cov[0][0] - s;
     const earlyMs = e <= now ? Math.max(0, e - cov[cov.length - 1][1]) : 0;
     row.firstIn = ov.length ? ov[0][0] : null;
     row.lastOut = e <= now && ov.length ? ov[ov.length - 1][1] : null;
-    row.late = lateMs > graceMs ? mins(lateMs) : 0;
+    row.late = mins(lateMs) > grace ? mins(lateMs) : 0; // the same rounded minutes that get charged
     row.early = mins(earlyMs);
     row.exit = mins(until - s - covered - lateMs - earlyMs);
     return row;
@@ -170,9 +174,11 @@ function overtime(intervals, periods, date) {
 /** Attendance for every (employee, date) in a range. */
 export function loadAttendance(db, { from, to, userId = null, now = Date.now() }) {
   const settings = getSettings(db);
-  const users = db.prepare(`SELECT id, name, username, salary, periods, day_off, created_at FROM users
-                            WHERE role = 'employee' AND active = 1 ${userId ? 'AND id = ?' : ''} ORDER BY id`)
-    .all(...(userId ? [userId] : []));
+  // someone deactivated still counts for the days they actually worked in the range (up to their last punch)
+  const users = db.prepare(`SELECT id, name, username, salary, periods, day_off, created_at, active,
+                              (SELECT MAX(date) FROM punches p WHERE p.user_id = users.id AND p.voided = 0 AND p.date BETWEEN ? AND ?) AS last_day
+                            FROM users WHERE role = 'employee' ${userId ? 'AND id = ?' : ''} ORDER BY id`)
+    .all(from, to, ...(userId ? [userId] : [])).filter((u) => u.active || u.last_day);
   const today = localDate(now);
   const punches = db.prepare(`SELECT user_id, date, ts, type, note FROM punches WHERE voided = 0 AND date BETWEEN ? AND ?`).all(from, to);
   const excuses = db.prepare('SELECT user_id, date, kind FROM excuses WHERE date BETWEEN ? AND ?').all(from, to);
@@ -196,7 +202,7 @@ export function loadAttendance(db, { from, to, userId = null, now = Date.now() }
   for (const u of users) {
     const since = localDate(u.created_at);
     for (const date of dateRange(from, to)) {
-      if (date > today) continue;
+      if (date > today || (!u.active && date > u.last_day)) continue;
       const day = computeDay({
         date,
         punches: byKey.get(`${u.id}|${date}`) || [],

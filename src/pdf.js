@@ -25,7 +25,10 @@ export function htmlToPdf(html, { landscape = false } = {}) {
       // itself is answered here, its CSS, fonts and images come from the running app.
       const url = `http://127.0.0.1:${config.port}/__pdf-render`;
       await page.setRequestInterception(true);
-      page.on('request', (r) => (r.url() === url ? r.respond({ status: 200, contentType: 'text/html; charset=utf-8', body: html }) : r.continue()));
+      // only the page itself and the app's own fonts and styles; nothing else may load
+      const own = `http://127.0.0.1:${config.port}/`;
+      page.on('request', (r) => (r.url() === url ? r.respond({ status: 200, contentType: 'text/html; charset=utf-8', body: html })
+        : r.url().startsWith(own) ? r.continue() : r.abort()));
       await page.goto(url, { waitUntil: 'networkidle0', timeout: 30_000 });
       await page.evaluate(() => document.fonts.ready);
       return Buffer.from(await page.pdf({ format: 'A4', landscape, printBackground: true, margin: { top: '12mm', bottom: '12mm', left: '10mm', right: '10mm' } }));

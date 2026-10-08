@@ -80,11 +80,11 @@ ${table(['#', 'الموظف', 'النوع', 'كود المنتج', 'العدد',
 ${table(['#', 'الموظف', 'النوع', 'العنوان', 'التفاصيل', 'الحالة'],
     d.tickets.map((x) => [x.id, esc(x.user_name), TICKET_KINDS[x.kind], esc(x.title), esc(x.body), TICKET_STATUS[x.status]]))}
 
-<h2>الخصومات والسلف المسجّلة اليوم</h2>
+${d.money === false ? '' : `<h2>الخصومات والسلف المسجّلة اليوم</h2>
 ${table(['الموظف', 'النوع', 'المبلغ', 'التفاصيل'], [
     ...d.deductions.map((x) => [esc(x.user_name), `خصم: ${DEDUCTION_LABELS[x.category]}`, n(x.amount), esc(x.reason)]),
     ...d.debts.map((x) => [esc(x.user_name), x.kind === 'loan' ? 'سلفة' : 'سداد سلفة', n(x.amount), esc(x.note)]),
-  ])}
+  ])}`}
 
 <footer>وريف · فريق العمل · صدر التقرير ${esc(issued())}</footer>
 <script src="/print.js"></script>

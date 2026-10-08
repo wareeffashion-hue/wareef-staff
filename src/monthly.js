@@ -1,11 +1,11 @@
 // Month-level work: closing payroll, the monthly report, employee of the month, and what runs on the 1st.
-import { audit } from './db.js';
+import { audit, tx } from './db.js';
 import { HttpError } from './http.js';
 import { getSettings } from './settings.js';
 import { localDate, localTime, monthBounds } from './time.js';
 import { opsRows, payroll } from './reports.js';
 import { performance, prevMonth, scoreDetails } from './performance.js';
-import { appLink, notifyEmployee, queue } from './notify.js';
+import { appLink, notifyEmployee, queue, queued } from './notify.js';
 import * as msg from './messages.js';
 
 // ------------------------------------------------------------------ payroll close
@@ -23,23 +23,26 @@ export function payrollFor(db, month, now = Date.now()) {
 }
 
 export function closeMonth(db, admin, month, { send = true, now = Date.now() } = {}) {
-  if (localDate(now) < monthBounds(month).to) throw new HttpError(400, 'لا يمكن إقفال شهر قبل نهايته');
+  // only once the month is fully over (from the 1st of the next month), so its last day is complete
+  if (localDate(now) <= monthBounds(month).to) throw new HttpError(400, 'لا يمكن إقفال شهر قبل نهايته');
   if (closedMonth(db, month)) throw new HttpError(400, 'الشهر مقفل مسبقاً');
   const rows = payroll(db, month, now);
-  db.prepare('INSERT INTO payroll_closes (month, snapshot, closed_by, closed_at) VALUES (?, ?, ?, ?)').run(month, JSON.stringify(rows), admin.id, now);
-  audit(db, admin.id, 'payroll.close', null, { month });
+  tx(db, () => {
+    db.prepare('INSERT INTO payroll_closes (month, snapshot, closed_by, closed_at) VALUES (?, ?, ?, ?)').run(month, JSON.stringify(rows), admin.id, now);
+    audit(db, admin.id, 'payroll.close', null, { month });
+  });
   let sent = 0;
   if (send) sent = sendPayslips(db, month);
   return { ok: true, sent };
 }
 
-export function sendPayslips(db, month) {
+export function sendPayslips(db, month, { again = false } = {}) {
   const c = closedMonth(db, month);
   if (!c) throw new HttpError(400, 'أقفل الشهر أولاً');
   const link = appLink(db);
   let sent = 0;
   for (const r of JSON.parse(c.snapshot)) {
-    if (notifyEmployee(db, r.userId, 'payslip', msg.payslip({ name: r.name, month, r, link }), `payslip:${month}:${r.userId}:${c.closed_at}`)) sent++;
+    if (notifyEmployee(db, r.userId, 'payslip', msg.payslip({ name: r.name, month, r, link }), `payslip:${month}:${r.userId}:${c.closed_at}${again ? `:${Date.now()}` : ''}`)) sent++;
   }
   return sent;
 }
@@ -120,14 +123,17 @@ export function monthlySummary(db, month, now = Date.now()) {
   return msg.card({ manager: true, icon: '📅', title: `تقرير شهر ${msg.monthName(month)}`, lines, link: link ? `${link.replace(/\/$/, '')}/report/monthly?month=${month}` : undefined });
 }
 
+const awardTried = new Set();
+
 /** On the 1st of each month, from 09:00: last month's report to the manager and its employee of the month to everyone. */
 export function monthlyTick(db, now = Date.now()) {
   const n = getSettings(db).notify;
   const today = localDate(now);
   if (!n.monthly_auto || today.slice(8) !== '01' || localTime(now) < '09:00') return;
   const month = prevMonth(today.slice(0, 7));
-  if (n.manager_phone && n.alert_manager) queue(db, { to: n.manager_phone, kind: 'monthly', key: `monthly:${month}`, body: monthlySummary(db, month, now) });
-  if (!awardOf(db, month)?.announced_at) {
+  if (n.manager_phone && n.alert_manager && !queued(db, `monthly:${month}`)) queue(db, { to: n.manager_phone, kind: 'monthly', key: `monthly:${month}`, body: monthlySummary(db, month, now) });
+  if (!awardOf(db, month)?.announced_at && !awardTried.has(month)) {
+    awardTried.add(month); // once per run of the server; a month with no data isn't retried every minute
     try { announceAward(db, month, { now }); } catch { /* no data that month */ }
   }
 }
