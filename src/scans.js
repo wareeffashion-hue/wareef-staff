@@ -4,6 +4,7 @@
 import { audit } from './db.js';
 import { HttpError } from './http.js';
 import { localDate, localTime } from './time.js';
+import { matchReturn, unmatchScan } from './exchanges.js';
 
 export const SCAN_KINDS = { shipment: 'شحنة طالعة', return: 'مرتجع من عميل' };
 export const SCAN_METRIC = { shipment: 'shipments', return: 'returns_warehouse' };
@@ -40,8 +41,11 @@ export function addScan(db, user, { kind, code }, now = Date.now()) {
   const count = syncMetric(db, date, kind, user.id);
   // a return of something we shipped (or the other way round) is worth knowing
   const other = db.prepare('SELECT date FROM scans WHERE kind = ? AND code = ?').get(kind === 'return' ? 'shipment' : 'return', c);
-  const note = other ? (kind === 'return' ? `شُحن يوم ${dm(other.date)}` : `سبق تسجيله كمرتجع يوم ${dm(other.date)}`) : '';
-  return { id, code: c, kind, date, ts: now, count, note };
+  let note = other ? (kind === 'return' ? `شُحن يوم ${dm(other.date)}` : `سبق تسجيله كمرتجع يوم ${dm(other.date)}`) : '';
+  // a return customer service is waiting for (replacement already shipped)
+  const ex = kind === 'return' ? matchReturn(db, { id, code: c, ts: now }, user, now) : null;
+  if (ex) note = [`إرجاع ينتظره ${ex.created_name || 'خدمة العملاء'}${ex.order_no ? ` · طلب ${ex.order_no}` : ''} · وصله إشعار`, note].filter(Boolean).join(' · ');
+  return { id, code: c, kind, date, ts: now, count, note, exchange: ex ? ex.id : null };
 }
 
 export function removeScan(db, user, id, isManager, now = Date.now()) {
@@ -49,6 +53,7 @@ export function removeScan(db, user, id, isManager, now = Date.now()) {
   if (!s) throw new HttpError(404, 'غير موجود');
   if (!isManager && (s.user_id !== user.id || now - s.ts > UNDO_MS)) throw new HttpError(403, 'تقدر تلغي مسحك خلال 10 دقائق فقط. للأقدم تواصل مع المدير');
   db.prepare('DELETE FROM scans WHERE id = ?').run(s.id);
+  unmatchScan(db, s.id);
   audit(db, user.id, 'scan.delete', s.user_id, { kind: s.kind, code: s.code, date: s.date });
   return { ok: true, count: syncMetric(db, s.date, s.kind, user.id) };
 }

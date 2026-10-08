@@ -376,3 +376,48 @@ test('phone notifications: alarms and decisions reach subscribed devices, once',
   assert.equal(db.prepare("SELECT COUNT(*) n FROM push_subscriptions WHERE endpoint LIKE '%ali-phone'").get().n, 0);
   assert.equal((await ali('POST', '/api/push/test')).status, 400);
 });
+
+test('exchanges: customer service registers the return, the warehouse scan matches it, 5 days late → follow-up', async () => {
+  const { exchangeTick } = await import('../src/exchanges.js');
+  const ab = client();
+  assert.equal((await ab('POST', '/api/login', { username: 'abdullah', password: 'abdullah-pass1' })).status, 200);
+  await admin('PUT', `/api/users/${id('monther')}`, { perms: ['exchanges', 'm:pending_issues'] });
+  assert.equal((await ali('POST', '/api/exchanges', { tracking: 'ARX-9001' })).status, 403);
+  assert.equal((await ab('POST', '/api/exchanges', { tracking: 'ARX-9001' })).status, 403, 'the warehouse reads, does not register');
+  const a = await monther('POST', '/api/exchanges', { tracking: ' arx-9001 ', kind: 'exchange', order_no: '5521', customer: 'سارة', phone: '0551234567' });
+  assert.equal(a.status, 200);
+  assert.equal(a.body.exchange.tracking, 'ARX9001');
+  assert.equal(a.body.exchange.phone, '966551234567');
+  assert.equal((await monther('POST', '/api/exchanges', { tracking: 'ARX 9001' })).status, 409, 'once per tracking number');
+  assert.equal((await ab('GET', '/api/exchanges')).body.counts.open, 1, 'the warehouse can see what is expected');
+  // Abdullah scans the customer's return (label printed with a dash)
+  const scan = await ab('POST', '/api/scans', { kind: 'return', code: 'ARX-9001' });
+  assert.equal(scan.status, 200);
+  assert.ok(scan.body.exchange);
+  assert.match(scan.body.note, /إرجاع ينتظره منذر/);
+  assert.match(notes("kind = 'exchange_arrived' AND user_id = ?", id('monther')).at(-1).body, /وصلت شحنة الإرجاع/);
+  const recv = (await monther('GET', '/api/exchanges?status=received')).body.rows[0];
+  assert.equal(recv.received_name, 'عبدالله');
+  // undoing the scan puts it back as not arrived
+  assert.equal((await ab('DELETE', `/api/scans/${scan.body.id}`)).status, 200);
+  assert.equal((await monther('GET', '/api/exchanges')).body.counts.open, 1);
+  // registered after the warehouse already scanned it → arrives at once
+  await ab('POST', '/api/scans', { kind: 'return', code: 'SMSA77001' });
+  const late = await monther('POST', '/api/exchanges', { tracking: 'smsa77001', kind: 'refund' });
+  assert.ok(late.body.exchange.received_at);
+  // five days without the piece → Monther follows up with the customer, once
+  db.prepare("UPDATE exchanges SET date = ? WHERE tracking = 'ARX9001'").run(addDays(localDate(), -5));
+  const morning = at(localDate(), '10:00');
+  assert.equal(exchangeTick(db, morning), 1);
+  assert.equal(exchangeTick(db, morning + 60_000), 0, 'once only');
+  assert.match(notes("kind = 'exchange_due' AND user_id = ?", id('monther')).at(-1).body, /مرّت \*5 أيام\*/);
+  assert.ok(notes("kind = 'exchange_due' AND user_id IS NULL").length, 'the manager hears too');
+  const list = (await monther('GET', '/api/exchanges')).body;
+  assert.equal(list.rows[0].overdue, true);
+  assert.equal(list.counts.overdue, 1);
+  // follow-up note, then only the owner or a manager may delete
+  assert.equal((await monther('PUT', `/api/exchanges/${a.body.exchange.id}`, { note: 'كلمت العميلة، بترسلها بكرة' })).body.exchange.note, 'كلمت العميلة، بترسلها بكرة');
+  assert.equal((await monther('DELETE', `/api/exchanges/${late.body.exchange.id}`)).status, 400, 'arrived ones stay');
+  assert.equal((await admin('POST', `/api/exchanges/${a.body.exchange.id}/receive`)).status, 200);
+  assert.equal((await admin('GET', '/api/exchanges')).body.counts.open, 0);
+});

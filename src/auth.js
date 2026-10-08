@@ -108,7 +108,7 @@ export function requireOps(user) {
 const STAFF = [
   ['abdullah', 'عبدالله', ['scan', 'm:shipments', 'm:returns_warehouse', 'm:orders_prepared']],
   ['basem', 'باسم', ['requests', 'm:late_orders', 'm:late_available', 'm:late_unavailable']],
-  ['monther', 'منذر', ['m:pending_issues', 'm:pending_chats']],
+  ['monther', 'منذر', ['exchanges', 'm:pending_issues', 'm:pending_chats']],
   ['safwan', 'صفوان', ['m:daily_edits']],
   ['ali', 'علي', []],
   ['abdulmalik', 'عبدالملك', ['orders', 'stock', 'm:returns_system']],

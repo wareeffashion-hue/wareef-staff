@@ -118,7 +118,7 @@ test('operations: each part needs its own permission', async () => {
   assert.equal(ops.notes, 'تأخر مندوب الشحن');
   const users = (await admin('GET', '/api/users')).body.users;
   assert.deepEqual(users.find((u) => u.username === 'ali').perms, ['orders', 'stock', 'm:shipments']);
-  assert.deepEqual(users.find((u) => u.username === 'monther').perms, ['m:pending_issues', 'm:pending_chats']);
+  assert.deepEqual(users.find((u) => u.username === 'monther').perms, ['exchanges', 'm:pending_issues', 'm:pending_chats']);
 });
 
 test('invoices and merchant returns are recorded per product code', async () => {

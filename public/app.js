@@ -157,6 +157,7 @@ const ICONS = {
   chart: '<path d="M4 4v16h16"/><path d="M7 15l4-5 3 3 5-7"/>',
   trophy: '<path d="M8 4h8v5a4 4 0 0 1-8 0z"/><path d="M8 6H5a3 3 0 0 0 3 4M16 6h3a3 3 0 0 1-3 4M12 13v4M8 21h8M9 17h6"/>',
   barcode: '<path d="M4 5v14M7 5v14M11 5v14M14 5v14M17 5v14M20 5v14"/><path d="M2 3h3M19 3h3M2 21h3M19 21h3"/>',
+  ret: '<path d="M9 14 4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-3"/>',
   sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
 };
 // pathLength lets every stroke draw itself in with the same dash numbers
@@ -299,7 +300,7 @@ function navItems() {
   if (ME.role === 'admin') {
     return [
       ['dashboard', 'لوحة اليوم', 'home'], ['attendance', 'الحضور والانصراف', 'clock'], ['leaves', 'الإجازات والاستئذان', 'sun'], ['payroll', 'الرواتب', 'wallet'],
-      ['money', 'الخصومات والسلف', 'coins'], ['ops', 'العمليات اليومية', 'box'], ['scan', 'الباركود', 'barcode'], ['requests', 'الفسح والنواقص', 'swap'], ['tickets', 'التذاكر', 'ticket'],
+      ['money', 'الخصومات والسلف', 'coins'], ['ops', 'العمليات اليومية', 'box'], ['scan', 'الباركود', 'barcode'], ['exchanges', 'الاستبدال والاسترجاع', 'ret'], ['requests', 'الفسح والنواقص', 'swap'], ['tickets', 'التذاكر', 'ticket'],
       ['performance', 'الأداء', 'trophy'], ['analytics', 'المؤشرات', 'chart'],
       ['flags', 'مؤشرات التلاعب', 'shield'], ['staff', 'الموظفون', 'users'], ['reports', 'التقارير والتصدير', 'file'], ['settings', 'الإعدادات', 'gear'],
     ];
@@ -309,13 +310,13 @@ function navItems() {
     // Supervisor: an employee who punches, plus the team pages without salaries or settings.
     return [
       ['today', 'البصمة', 'clock'], ['dashboard', 'لوحة اليوم', 'home'], ['attendance', 'الحضور والانصراف', 'cal'], ['leaves', 'الإجازات والاستئذان', 'sun'],
-      ...ops, ['scan', 'الباركود', 'barcode'], ['requests', 'الفسح والنواقص', 'swap'], ['tickets', 'التذاكر', 'ticket'], ['performance', 'الأداء', 'trophy'], ['analytics', 'المؤشرات', 'chart'],
+      ...ops, ['scan', 'الباركود', 'barcode'], ['exchanges', 'الاستبدال والاسترجاع', 'ret'], ['requests', 'الفسح والنواقص', 'swap'], ['tickets', 'التذاكر', 'ticket'], ['performance', 'الأداء', 'trophy'], ['analytics', 'المؤشرات', 'chart'],
       ['flags', 'مؤشرات التلاعب', 'shield'], ['reports', 'التقارير', 'file'], ['mine', 'سجلي', 'wallet'], ['account', 'حسابي', 'user'],
     ];
   }
   return [
     ['today', 'البصمة', 'clock'], ...(ME.perms.includes('scan') ? [['scan', 'الباركود', 'barcode']] : []), ['mine', 'سجلي', 'cal'], ['leaves', 'إجازاتي', 'sun'], ['tickets', 'تذاكري', 'ticket'],
-    ...ops, ...(ME.perms.includes('requests') ? [['requests', 'الفسح والنواقص', 'swap']] : []), ['account', 'حسابي', 'user'],
+    ...ops, ...(ME.perms.includes('exchanges') ? [['exchanges', 'الاستبدال', 'ret']] : []), ...(ME.perms.includes('requests') ? [['requests', 'الفسح والنواقص', 'swap']] : []), ['account', 'حسابي', 'user'],
   ];
 }
 
@@ -1271,6 +1272,77 @@ function lineRow(i) {
 // ------------------------------------------------------------------ release & shortage requests
 const RQ = { release: 'فسح لإرجاع منتجات', shortage: 'طلب نواقص' };
 const RS = { pending: ['بانتظار المدير', 'warn'], approved: ['تمت الموافقة', 'info'], rejected: ['مرفوض', 'bad'], done: ['تم التنفيذ', 'good'] };
+// ------------------------------------------------------------------ exchanges shipped ahead
+// Customer service ships the replacement first and records the return's tracking number;
+// the warehouse scan marks it arrived. Still out after a few days → follow up with the customer.
+const EXK = { exchange: 'استبدال', refund: 'استرجاع' };
+PAGES.exchanges = async () => {
+  const status = sessionStorage.getItem('ex-status') || 'open';
+  const d = await api(`/api/exchanges?status=${status}`);
+  const write = ME.role === 'admin' || ME.manager || ME.perms.includes('exchanges');
+  const ago = (n) => (n === 0 ? 'اليوم' : n === 1 ? 'أمس' : n === 2 ? 'منذ يومين' : `منذ ${n} أيام`);
+  const state = (e) => (e.received_at
+    ? pill(`وصلت ${fmtDate(localIso(e.received_at).slice(0, 10))}${e.received_name ? ` · ${e.received_name}` : ''}`, 'good')
+    : e.overdue ? pill(`تابع العميل · ${ago(e.days)}`, 'bad') : pill(`متأخرة · ${ago(e.days)}`, 'warn'));
+  const wa = (ph) => (ph && /^\d{9,15}$/.test(ph) ? ` <a class="link" href="https://wa.me/${ph}" target="_blank" rel="noopener">واتساب</a>` : '');
+  const pg = render(`
+    <div class="topline"><h1>الاستبدال والاسترجاع</h1><div class="tools">
+      <div class="seg" role="tablist">${[['open', 'لم تصل'], ['received', 'وصلت'], ['all', 'الكل']].map(([k, l]) => `<button type="button" data-st="${k}" class="${k === status ? 'on' : ''}">${l}</button>`).join('')}</div></div></div>
+    <div class="kpis">
+      <div class="kpi ${d.counts.open ? 'warn' : ''}"><b>${int(d.counts.open)}</b><span>شحنات إرجاع ما وصلت</span></div>
+      <div class="kpi ${d.counts.overdue ? 'bad' : ''}"><b>${int(d.counts.overdue)}</b><span>تجاوزت ${d.dueDays} أيام · تابع العميل</span></div>
+      <div class="kpi good"><b>${int(d.counts.received30)}</b><span>وصلت آخر 30 يوم</span></div>
+    </div>
+    ${write ? `<section class="panel"><header><h2>تسجيل شحنة إرجاع</h2><span class="muted small">للطلبات اللي انشحن بديلها قبل ما ترجع قطعة العميل</span></header>
+      <form class="form" id="exF">
+        <div class="seg" role="radiogroup" aria-label="النوع">${Object.entries(EXK).map(([k, v], i) => `<button type="button" data-k="${k}" class="${i ? '' : 'on'}">${v}</button>`).join('')}</div>
+        <input type="hidden" name="kind" id="ex-kind" value="exchange">
+        <div class="row">
+          <label class="f">رقم شحنة الإرجاع<input name="tracking" id="ex-track" dir="ltr" required autocomplete="off" placeholder="مثال: ARX123456"></label>
+          <label class="f">رقم الطلب<input name="order_no" dir="ltr" inputmode="numeric"></label>
+        </div>
+        <div class="row">
+          <label class="f">اسم العميل<input name="customer"></label>
+          <label class="f">جوال العميل<input name="phone" dir="ltr" inputmode="tel" placeholder="05xxxxxxxx"></label>
+        </div>
+        <label class="f">ملاحظة<input name="note" maxlength="300" placeholder="مثال: استبدال مقاس M بـ L"></label>
+        <button class="btn" type="submit">حفظ</button>
+        <p class="muted small">أول ما يمسحها عبدالله بالباركود كمرتجع، يوصلك إشعار إنها وصلت. وإذا مرّت ${d.dueDays} أيام وما وصلت يوصلك تنبيه تتابع العميل.</p>
+      </form></section>` : ''}
+    <section class="panel"><header><h2>${status === 'open' ? 'بانتظار الوصول' : status === 'received' ? 'وصلت المستودع' : 'كل الشحنات'}</h2></header>
+      ${d.rows.length ? `<div class="list">${d.rows.map((e) => `<div class="item exi${e.overdue ? ' over' : ''}">
+        <div class="top"><b dir="ltr" class="num">${esc(e.tracking)}</b>${state(e)}</div>
+        <div class="small">${EXK[e.kind]}${e.order_no ? ` · طلب <b dir="ltr">${esc(e.order_no)}</b>` : ''}${e.customer ? ` · ${esc(e.customer)}` : ''}${e.phone ? ` · <span dir="ltr">${esc(e.phone.replace(/^966(5\d{8})$/, '0$1'))}</span>${wa(e.phone)}` : ''}</div>
+        <div class="muted small">سُجّلت ${fmtDate(e.date)}${e.created_name ? ` · ${esc(e.created_name)}` : ''}</div>
+        ${e.note ? `<div class="exnote small">📝 ${esc(e.note)}</div>` : ''}
+        <div class="acts">${write ? `<button class="link" data-note="${e.id}">${e.note ? 'تعديل الملاحظة' : 'إضافة ملاحظة'}</button>` : ''}
+          ${!e.received_at && (ME.role === 'admin' || ME.manager) ? `<button class="link" data-rcv="${e.id}">وصلت يدوياً</button>` : ''}
+          ${write && (!e.received_at || ME.role === 'admin') ? `<button class="link bad" data-del="${e.id}">حذف</button>` : ''}</div>
+      </div>`).join('')}</div>` : `<p class="empty">${status === 'open' ? 'ما في شحنات إرجاع منتظرة 👌' : 'لا توجد شحنات'}</p>`}
+    </section>`);
+  $$('[data-st]', pg).forEach((b) => { b.onclick = () => { sessionStorage.setItem('ex-status', b.dataset.st); refresh(); }; });
+  const f = $('#exF', pg);
+  if (f) {
+    $$('[data-k]', f).forEach((b) => { b.onclick = () => { $('#ex-kind', f).value = b.dataset.k; $$('[data-k]', f).forEach((x) => x.classList.toggle('on', x === b)); }; });
+    f.onsubmit = async (e) => {
+      e.preventDefault();
+      const r = await act($('button[type=submit]', f), () => api('/api/exchanges', { method: 'POST', body: formData(f) }));
+      if (r) { toast(r.exchange.received_at ? 'تم الحفظ، والشحنة واصلة المستودع مسبقاً ✓' : 'تم الحفظ. يوصلك إشعار أول ما توصل'); refresh(); }
+    };
+  }
+  const row = (id) => d.rows.find((x) => x.id === +id);
+  $$('[data-note]', pg).forEach((b) => { b.onclick = async () => {
+    const v = prompt('ملاحظة المتابعة (مثال: كلمت العميل وبيرسلها بكرة)', row(b.dataset.note)?.note || '');
+    if (v !== null && await act(b, () => api(`/api/exchanges/${b.dataset.note}`, { method: 'PUT', body: { note: v } }), 'تم الحفظ')) refresh();
+  }; });
+  $$('[data-rcv]', pg).forEach((b) => { b.onclick = async () => {
+    if (confirm('تأكيد إن الشحنة وصلت المستودع؟') && await act(b, () => api(`/api/exchanges/${b.dataset.rcv}/receive`, { method: 'POST' }), 'تم التسجيل ووصل الإشعار')) refresh();
+  }; });
+  $$('[data-del]', pg).forEach((b) => { b.onclick = async () => {
+    if (confirm('حذف شحنة الإرجاع؟') && await act(b, () => api(`/api/exchanges/${b.dataset.del}`, { method: 'DELETE' }), 'تم الحذف')) refresh();
+  }; });
+};
+
 PAGES.requests = async () => {
   const isAdmin = ME.manager;
   const status = sessionStorage.getItem('rq-status') || '';

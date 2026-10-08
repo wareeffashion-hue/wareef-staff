@@ -309,6 +309,27 @@ const MIGRATIONS = [
   -- reminders that must reach the phone once only (same keys as the WhatsApp queue)
   CREATE TABLE push_sent (key TEXT PRIMARY KEY, ts INTEGER NOT NULL);
   `,
+  // v8: exchanges shipped ahead of the customer's return: the return tracking number, matched when the warehouse scans it.
+  `
+  CREATE TABLE exchanges (
+    id INTEGER PRIMARY KEY,
+    kind TEXT NOT NULL DEFAULT 'exchange' CHECK (kind IN ('exchange', 'refund')),
+    tracking TEXT NOT NULL UNIQUE,
+    order_no TEXT NOT NULL DEFAULT '',
+    customer TEXT NOT NULL DEFAULT '',
+    phone TEXT NOT NULL DEFAULT '',
+    note TEXT NOT NULL DEFAULT '',
+    created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at INTEGER NOT NULL,
+    date TEXT NOT NULL,
+    received_at INTEGER,
+    received_scan_id INTEGER,
+    received_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    due_notified_at INTEGER
+  );
+  CREATE INDEX exchanges_open ON exchanges(received_at, date);
+  UPDATE users SET perms = json_insert(perms, '$[#]', 'exchanges') WHERE username = 'monther' AND perms NOT LIKE '%"exchanges"%';
+  `,
 ];
 
 export function openDb(path) {

@@ -28,6 +28,7 @@ import { performance } from './performance.js';
 import { handleIncoming } from './commands.js';
 import { currentExit, endExit, exitTick, requestExit, startExit } from './exits.js';
 import { SCAN_KINDS, SCAN_METRIC, addScan, removeScan, scanCounts, scanList } from './scans.js';
+import { addExchange, exchangeTick, listExchanges, receiveManually, removeExchange, updateExchange } from './exchanges.js';
 import { pushTo, removeSubscription, saveSubscription, vapidKeys } from './push.js';
 import { renderMonthlyReport, renderPayslip } from './print.js';
 import * as msg from './messages.js';
@@ -417,6 +418,32 @@ export function createApp(db) {
   r.delete('/api/scans/:id', ({ params, user }) => {
     scanAccess(user);
     return removeScan(db, user, params.id, isManager(user));
+  }, { auth: true });
+
+  // ------------------------------------------------------------ exchanges shipped ahead (return tracking numbers)
+  const exAccess = (user, write = false) => {
+    if (can(user, 'exchanges') || isManager(user) || (!write && can(user, 'scan'))) return;
+    throw new HttpError(403, 'ليست لديك صلاحية الاستبدال والاسترجاع');
+  };
+  r.get('/api/exchanges', ({ url, user }) => {
+    exAccess(user);
+    return listExchanges(db, { status: url.searchParams.get('status') || 'open' });
+  }, { auth: true });
+  r.post('/api/exchanges', async ({ req, user }) => {
+    exAccess(user, true);
+    return addExchange(db, user, parseJson(await readBody(req)));
+  }, { auth: true });
+  r.put('/api/exchanges/:id', async ({ req, params, user }) => {
+    exAccess(user, true);
+    return updateExchange(db, user, params.id, parseJson(await readBody(req)), isManager(user));
+  }, { auth: true });
+  r.post('/api/exchanges/:id/receive', ({ params, user }) => {
+    requireManager(user);
+    return receiveManually(db, user, params.id);
+  }, { auth: true });
+  r.delete('/api/exchanges/:id', ({ params, user }) => {
+    exAccess(user, true);
+    return removeExchange(db, user, params.id, isManager(user));
   }, { auth: true });
 
   // ------------------------------------------------------------ release / shortage requests
@@ -1002,7 +1029,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   if (boot) {
     console.log(`حساب المدير: ${boot.username}${boot.password ? ` / كلمة المرور المؤقتة: ${boot.password}` : ''}`);
   }
-  startNotifier(db, [monthlyTick, exitTick]);
+  startNotifier(db, [monthlyTick, exitTick, exchangeTick]);
   waOnMessage((phone, text) => handleIncoming(db, phone, text));
   waAutoStart();
   const backup = () => dailyBackup(db).catch((e) => console.error('backup failed', e));

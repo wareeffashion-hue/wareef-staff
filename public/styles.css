@@ -521,3 +521,10 @@ body::after { content: ""; position: fixed; inset: 0; z-index: 0; pointer-events
 .howto ol { margin: 8px 0; padding-inline-start: 20px; display: grid; gap: 4px; }
 /* buttons sharing a row on a narrow phone wrap their label instead of clipping it */
 .row > .btn { white-space: normal; line-height: 1.35; text-align: center; }
+
+/* ---------- exchanges (return shipments awaited) */
+.exi { cursor: default; gap: 6px; }
+.exi .top b { font-size: 1.05rem; letter-spacing: .02em; }
+.exi.over { border-color: rgb(199 51 79 / 35%); background: linear-gradient(90deg, transparent, rgb(199 51 79 / 5%)); }
+.exnote { background: var(--sunk); border-radius: 8px; padding: 6px 10px; color: var(--ink-2); }
+.exi .acts { gap: 14px; flex-wrap: wrap; }

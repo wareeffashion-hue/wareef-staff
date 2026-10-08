@@ -41,7 +41,7 @@ export function cardToPush(text) {
 const URGENT = new Set(['alarm_start', 'alarm_break', 'alarm_end', 'remind_in', 'remind_out', 'exit_over', 'exit_request', 'leave_status']);
 const ROUTE = { alarm_start: '#/today', alarm_break: '#/today', alarm_end: '#/today', remind_in: '#/today', remind_out: '#/today', exit_over: '#/today',
   leave_status: '#/leaves', request_status: '#/requests', ticket_reply: '#/tickets', deduction: '#/mine', debt_loan: '#/mine', debt_repayment: '#/mine',
-  payslip: '#/mine', award: '#/mine', exit_request: '#/dashboard', leave_request: '#/leaves', request: '#/requests', ticket: '#/tickets', summary: '#/dashboard' };
+  payslip: '#/mine', award: '#/mine', exchange_arrived: '#/exchanges', exchange_due: '#/exchanges', exit_request: '#/dashboard', leave_request: '#/leaves', request: '#/requests', ticket: '#/tickets', summary: '#/dashboard' };
 
 let sender = (sub, payload, opts) => webpush.sendNotification(sub, payload, opts);
 export const setPushSender = (fn) => { sender = fn; };   // tests

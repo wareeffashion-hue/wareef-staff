@@ -321,3 +321,35 @@ export const mgrScanDup = ({ name, reason }) => card({ manager: true,
   icon: '🔁', title: 'مسح مكرر بالباركود',
   fields: [['الموظف', name]], quote: reason,
 });
+
+// ------------------------------------------------------------------ exchanges shipped ahead
+export const exchangeArrived = ({ tracking, order, customer, kind, by, days, link }) => card({
+  icon: '📦', title: 'وصلت شحنة الإرجاع',
+  lines: [`قطعة العميل وصلت المستودع${days ? ` بعد ${days} ${days === 1 ? 'يوم' : days === 2 ? 'يومين' : 'أيام'}` : ' اليوم'}.`],
+  fields: [['رقم الشحنة', tracking], ...(order ? [['الطلب', order]] : []), ...(customer ? [['العميل', customer]] : []), ['النوع', kind], ...(by ? [['استلمها', by]] : [])],
+  link,
+});
+
+export const exchangeDue = ({ tracking, order, customer, phone, kind, days, date, link }) => card({
+  icon: '⏰', title: 'شحنة إرجاع ما وصلت',
+  lines: [`مرّت *${days} أيام* من تسجيلها (${date}) وما وصلتنا قطعة العميل، والبديل انشحن له.`],
+  fields: [['رقم الشحنة', tracking], ...(order ? [['الطلب', order]] : []), ...(customer ? [['العميل', customer]] : []), ...(phone ? [['جوال العميل', phone]] : []), ['النوع', kind]],
+  steps: ['تواصل مع العميل وتأكد إنه أرسل الشحنة', 'اكتب نتيجة المتابعة في ملاحظة الشحنة بالنظام'],
+  link,
+});
+
+export const mgrExchangeNew = ({ name, kind, tracking, order, customer }) => card({ manager: true,
+  icon: '🔄', title: `${kind} مسبق: ${name}`,
+  fields: [['رقم شحنة الإرجاع', tracking], ...(order ? [['الطلب', order]] : []), ...(customer ? [['العميل', customer]] : [])],
+});
+
+export const mgrExchangeArrived = ({ tracking, order, customer, kind, by, days }) => card({ manager: true,
+  icon: '📦', title: `وصلت شحنة إرجاع (${kind})`,
+  fields: [['رقم الشحنة', tracking], ...(order ? [['الطلب', order]] : []), ...(customer ? [['العميل', customer]] : []), ...(by ? [['استلمها', by]] : []), ['بعد', `${days} يوم`]],
+});
+
+export const mgrExchangeDue = ({ tracking, order, customer, kind, days, name }) => card({ manager: true,
+  icon: '⏰', title: `شحنة إرجاع متأخرة ${days} أيام`,
+  fields: [['رقم الشحنة', tracking], ['النوع', kind], ...(order ? [['الطلب', order]] : []), ...(customer ? [['العميل', customer]] : []), ...(name ? [['سجّلها', name]] : [])],
+  steps: [name ? `وصل ${name} إشعار يتابع العميل` : 'يحتاج متابعة مع العميل'],
+});
