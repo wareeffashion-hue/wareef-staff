@@ -532,6 +532,18 @@ const MIGRATIONS = [
   );
   CREATE UNIQUE INDEX shift_exceptions_day ON shift_exceptions(date, COALESCE(user_id, 0));
   `,
+  // v11 — additions phase 3: a selfie taken with a suspicious punch (kept 30 days, supervisors only)
+  `
+  CREATE TABLE punch_selfies (
+    punch_id INTEGER PRIMARY KEY REFERENCES punches(id),
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    file TEXT NOT NULL,
+    flags TEXT NOT NULL DEFAULT '[]',
+    sent INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX punch_selfies_time ON punch_selfies(created_at);
+  `,
 ];
 
 export function openDb(path) {

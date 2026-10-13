@@ -18,6 +18,7 @@ export const DEFAULTS = {
   late_minutes_per_riyal: 3, // lateness fine: one riyal per this many minutes; 0 = by salary like other missing time
   max_exit_minutes: 30,
   hide_deductions: false,    // employees see their net salary only, without the deduction amounts
+  selfie_on_suspicion: true, // a punch from a new device, outside the location or network needs a selfie
   security: {
     allowed_ips: [],      // empty = any network
     geo: null,            // { lat, lng, radius } in metres
@@ -103,6 +104,7 @@ export function saveSettings(db, patch) {
   if ('late_minutes_per_riyal' in patch) next.late_minutes_per_riyal = clampInt(patch.late_minutes_per_riyal, 0, 600);
   if ('max_exit_minutes' in patch) next.max_exit_minutes = clampInt(patch.max_exit_minutes, 1, 600);
   if ('hide_deductions' in patch) next.hide_deductions = !!patch.hide_deductions;
+  if ('selfie_on_suspicion' in patch) next.selfie_on_suspicion = !!patch.selfie_on_suspicion;
   if ('security' in patch) {
     const s = patch.security || {};
     const geo = s.geo && Number.isFinite(+s.geo.lat) && Number.isFinite(+s.geo.lng)

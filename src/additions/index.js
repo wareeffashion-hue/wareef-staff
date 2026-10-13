@@ -19,10 +19,11 @@ import {
 import {
   additionSettings, decideCase, deleteException, listCases, listExceptions, reviewTick, saveAdditionSettings, saveException,
 } from './cases.js';
+import { listSelfies, selfieImage, selfieRetentionTick } from './selfie.js';
 import { PAGE_HEADERS, isFinance, people, requireFinance, requireSup } from './util.js';
 
 /** Jobs run once a minute by the notifier. */
-export const additionJobs = [decisionFilesTick, shortageDailyTick, chatRetentionTick, reviewTick];
+export const additionJobs = [decisionFilesTick, shortageDailyTick, chatRetentionTick, reviewTick, selfieRetentionTick];
 
 export function registerAdditions(r, db) {
   const body = async (req) => parseJson(await readBody(req));
@@ -136,5 +137,10 @@ export function registerAdditions(r, db) {
   r.delete('/api/shift-exceptions/:id', async ({ req, params, user }) => deleteException(db, user, params.id, await body(req)), auth);
   r.get('/api/addition-settings', ({ user }) => additionSettings(db, user), auth);
   r.put('/api/addition-settings', async ({ req, user }) => saveAdditionSettings(db, user, await body(req)), auth);
+  r.get('/api/selfies', ({ user }) => listSelfies(db, user), auth);
+  r.get('/selfie/:id', ({ params, res, user }) => {
+    const img = selfieImage(db, user, params.id);
+    send(res, 200, img.buf, { 'Content-Type': img.type, 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' });
+  }, page);
   r.get('/api/staff-names', ({ user }) => ({ people: people(db).filter((p) => p.role === 'employee' && p.id !== user.id) }), auth);
 }

@@ -48,6 +48,65 @@ export function askReason(question = 'اكتب سبب التعديل') {
   }
 }
 
+/**
+ * Run a punch; if the server asks for a verification photo (new device, outside the location or
+ * network), open the front camera, take it, and send the punch again with it.
+ */
+export async function withSelfie(run) {
+  try { return await run({}); } catch (e) {
+    if (e.message !== 'selfie_required') throw e;
+    const selfie = await takeSelfie();
+    if (!selfie) throw new Error('صورة التحقق مطلوبة لهذه البصمة');
+    return run({ selfie });
+  }
+}
+
+/** The front camera in a dialog; resolves to a JPEG data URL, or null when cancelled. */
+function takeSelfie() {
+  return new Promise((resolve) => {
+    let stream = null;
+    let done = false;
+    const finish = (v) => { if (done) return; done = true; stream?.getTracks().forEach((t) => t.stop()); resolve(v); };
+    const dl = C.modal('صورة تحقق', `<div class="ad-cam">
+        <p class="small">البصمة هذي من جهاز جديد أو من خارج موقع العمل، فنحتاج صورة سريعة لوجهك. تُرسل للمشرف وتُحذف بعد 30 يوماً.</p>
+        <video id="cam-v" playsinline autoplay muted></video>
+        <canvas id="cam-c" hidden></canvas>
+        <div class="acts"><button class="btn" id="cam-shot" type="button">التقط الصورة</button>
+          <label class="btn ghost" id="cam-file-l" hidden>افتح الكاميرا<input type="file" accept="image/*" capture="user" id="cam-file" hidden></label></div>
+      </div>`, async (d) => {
+      const v = C.$('#cam-v', d);
+      const shot = C.$('#cam-shot', d);
+      const useFile = () => { v.hidden = true; shot.hidden = true; C.$('#cam-file-l', d).hidden = false; };
+      C.$('#cam-file', d).onchange = (e) => { const f = e.target.files[0]; if (!f) return; const rd = new FileReader(); rd.onload = () => fit(rd.result).then((x) => { d.close(); finish(x); }); rd.readAsDataURL(f); };
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: { ideal: 720 } }, audio: false });
+        v.srcObject = stream;
+      } catch { useFile(); }
+      shot.onclick = () => {
+        if (!v.videoWidth) return;
+        const k = Math.min(1, 720 / Math.max(v.videoWidth, v.videoHeight));
+        const cv = C.$('#cam-c', d);
+        cv.width = Math.round(v.videoWidth * k); cv.height = Math.round(v.videoHeight * k);
+        cv.getContext('2d').drawImage(v, 0, 0, cv.width, cv.height);
+        const url = cv.toDataURL('image/jpeg', 0.8);
+        d.close();
+        finish(url);
+      };
+    });
+    dl.addEventListener('close', () => finish(null));
+  });
+}
+
+/** Scale a photo from the file picker down to 720px JPEG. */
+function fit(src) {
+  return new Promise((ok) => {
+    const img = new Image();
+    img.onload = () => { const k = Math.min(1, 720 / Math.max(img.width, img.height)); const cv = document.createElement('canvas'); cv.width = Math.round(img.width * k); cv.height = Math.round(img.height * k); cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height); ok(cv.toDataURL('image/jpeg', 0.8)); };
+    img.onerror = () => ok(null);
+    img.src = src;
+  });
+}
+
 /** Add the new pages to the menu that app.js builds for this user. */
 export function addNav(items) {
   if (!me()) return items;
@@ -518,7 +577,7 @@ async function finance() {
 // ------------------------------------------------------------------ review cases
 async function cases() {
   const status = sessionStorage.getItem('cs-status') || 'pending';
-  const d = await C.api(`/api/cases?status=${status}`);
+  const [d, sf] = await Promise.all([C.api(`/api/cases?status=${status}`), C.api('/api/selfies')]);
   const range = (c) => (c.kind === 'unauthorized_exit' ? `${C.fmtT(c.started_at)} ← ${C.fmtT(c.ended_at)} · ${c.minutes} دقيقة` : `${C.esc(c.period_name)} · انتهت ${C.fmtT(c.started_at)}${c.note ? ` · ${C.esc(c.note)}` : ''}`);
   const CS = { pending: ['بانتظار المراجعة', 'warn'], approved: ['معتمدة', 'bad'], dismissed: ['ملغاة', 'good'] };
   const pg = C.render(`
@@ -535,6 +594,10 @@ async function cases() {
           : c.kind === 'unauthorized_exit' ? `<label class="ad-amt">الخصم<input type="number" min="0" step="0.5" value="${c.amount}" data-amt="${c.id}"></label><button class="btn sm" data-ok="${c.id}">اعتماد الخصم</button><button class="link" data-no="${c.id}">إلغاء (بعذر)</button>`
           : `<button class="btn sm" data-ok="${c.id}">اعتماد الغياب</button><button class="link" data-no="${c.id}">إلغاء (كان حاضراً)</button>`}</div>` : ''}
       </div>`).join('')}</div>` : `<p class="empty">${status === 'pending' ? 'ما في حالات بانتظار المراجعة 👌' : 'لا توجد حالات'}</p>`}
+    </section>
+    <section class="panel"><header><h2>صور التحقق</h2><span class="muted small">تُلتقط فقط مع البصمة المشتبه بها، وتُحذف تلقائياً بعد ${sf.keepDays} يوماً. يشوفها المدير والمشرفون فقط</span></header>
+      ${sf.selfies.length ? `<div class="ad-selfies">${sf.selfies.map((x) => `<a class="ad-selfie" href="/selfie/${x.punch_id}" target="_blank" rel="noopener"><img src="/selfie/${x.punch_id}" alt="" loading="lazy">
+        <b>${C.esc(x.name)}</b><small>${when(x.created_at)} · ${C.esc(x.flags.join('، '))}</small></a>`).join('')}</div>` : '<p class="empty">ما في صور تحقق</p>'}
     </section>`);
   C.$$('[data-st]', pg).forEach((b) => { b.onclick = () => { sessionStorage.setItem('cs-status', b.dataset.st); C.refresh(); }; });
   C.$$('[data-ok]', pg).forEach((b) => { b.onclick = async () => {
@@ -599,10 +662,17 @@ async function settingsPanel() {
   const panel = document.createElement('section');
   panel.className = 'panel';
   panel.id = 'ad-set';
-  panel.innerHTML = `<header><h2>الخصومات في حسابات الموظفين</h2></header>
+  panel.innerHTML = `<header><h2>إعدادات الإضافات</h2></header>
     <label class="check"><input type="checkbox" id="ad-hide" ${s.hide_deductions ? 'checked' : ''}>إخفاء مبالغ الخصومات عن الموظفين (يشوف الصافي فقط في «سجلي» والقسيمة والرسائل)</label>
-    <p class="muted small">المدير والحسابات يشوفون كل التفاصيل دائماً.</p>`;
+    <p class="muted small">المدير والحسابات يشوفون كل التفاصيل دائماً.</p>
+    <label class="check"><input type="checkbox" id="ad-selfie" ${s.selfie_on_suspicion ? 'checked' : ''}>صورة تحقق عند البصمة المشتبه بها (جهاز جديد، خارج الموقع أو الشبكة)</label>
+    <p class="muted small">الصورة تُلتقط لحظة البصمة فقط وتُحذف بعد 30 يوماً. ما فيه تتبع للموقع بين البصمات ولا خارج الدوام.</p>`;
   (C.$('.topline', main)?.nextElementSibling ? main.insertBefore(panel, C.$('.topline', main).nextElementSibling) : main.append(panel));
+  const sc = C.$('#ad-selfie', panel);
+  sc.onchange = async () => {
+    const r = await C.act(null, () => C.api('/api/addition-settings', { method: 'PUT', body: { selfie_on_suspicion: sc.checked } }), sc.checked ? 'فُعّلت صورة التحقق' : 'أُوقفت صورة التحقق');
+    if (!r) sc.checked = !sc.checked;
+  };
   const cb = C.$('#ad-hide', panel);
   cb.onchange = async () => {
     const r = await C.act(null, () => C.api('/api/addition-settings', { method: 'PUT', body: { hide_deductions: cb.checked } }), cb.checked ? 'أُخفيت الخصومات عن الموظفين' : 'الخصومات ظاهرة للموظفين');

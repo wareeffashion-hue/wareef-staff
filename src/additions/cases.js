@@ -224,12 +224,13 @@ export function deleteException(db, user, id, body = {}) {
 // ------------------------------------------------------------------ the owner's switch
 export function additionSettings(db, user) {
   if (user.role !== 'admin') throw new HttpError(403, 'للمدير فقط');
-  return { hide_deductions: !!getSettings(db).hide_deductions };
+  const s = getSettings(db);
+  return { hide_deductions: !!s.hide_deductions, selfie_on_suspicion: !!s.selfie_on_suspicion };
 }
 export function saveAdditionSettings(db, user, body) {
   if (user.role !== 'admin') throw new HttpError(403, 'للمدير فقط');
   const before = !!getSettings(db).hide_deductions;
-  const next = saveSettings(db, { hide_deductions: !!body.hide_deductions });
+  const next = saveSettings(db, { ...('hide_deductions' in body ? { hide_deductions: !!body.hide_deductions } : {}), ...('selfie_on_suspicion' in body ? { selfie_on_suspicion: !!body.selfie_on_suspicion } : {}) });
   if (before !== next.hide_deductions) logChange(db, { actor: user, area: 'salary', action: 'إظهار الخصومات للموظفين', before: before ? 'مخفية' : 'ظاهرة', after: next.hide_deductions ? 'مخفية' : 'ظاهرة', reason: text(body.reason, 300) || 'إعداد' });
-  return { ok: true, hide_deductions: next.hide_deductions };
+  return { ok: true, hide_deductions: next.hide_deductions, selfie_on_suspicion: next.selfie_on_suspicion };
 }

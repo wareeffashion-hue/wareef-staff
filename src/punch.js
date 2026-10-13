@@ -43,7 +43,11 @@ export function distance(a, b) {
 
 const ipAllowed = (ip, list) => list.some((rule) => (rule.endsWith('.') || rule.endsWith(':') ? ip.startsWith(rule) : ip === rule));
 
-export function recordPunch(db, user, body, { ip = '', device = '', userAgent = '', now = Date.now() } = {}) {
+/** Flags that make a punch suspicious enough to need a verification selfie. */
+export const SELFIE_FLAGS = ['new_device', 'geo_outside', 'ip_outside'];
+
+/** `requireSelfie`: a suspicious punch without a verification photo is refused with "selfie_required". */
+export function recordPunch(db, user, body, { ip = '', device = '', userAgent = '', now = Date.now(), requireSelfie = false, hasSelfie = false } = {}) {
   const type = String(body.type || '');
   if (!['in', 'out', 'leave', 'back'].includes(type)) throw new HttpError(400, 'نوع البصمة غير معروف');
   const date = localDate(now);
@@ -79,6 +83,7 @@ export function recordPunch(db, user, body, { ip = '', device = '', userAgent = 
   }
   const clientTs = Number.isFinite(+body.client_ts) ? Math.round(+body.client_ts) : null;
   if (clientTs && Math.abs(clientTs - now) > security.max_clock_skew_minutes * MIN) flags.push('clock_skew');
+  if (requireSelfie && !hasSelfie && flags.some((f) => SELFIE_FLAGS.includes(f))) throw new HttpError(428, 'selfie_required');
 
   const r = db.prepare(`INSERT INTO punches (user_id, date, ts, type, note, source, created_by, ip, device, user_agent, lat, lng, accuracy, client_ts, flags, created_at)
                         VALUES (?, ?, ?, ?, ?, 'self', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)

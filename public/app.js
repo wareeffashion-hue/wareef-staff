@@ -1,6 +1,6 @@
 // Wareef staff app: one file, no build step. Hash routes, server-rendered data via JSON API.
 import { startInk } from './ink.js';
-import { mountAdditions, addNav, askReason } from './additions.js';
+import { mountAdditions, addNav, askReason, withSelfie } from './additions.js';
 
 // ------------------------------------------------------------------ helpers
 const $ = (s, el = document) => el.querySelector(s);
@@ -593,7 +593,7 @@ PAGES.today = async () => {
     btn.disabled = true;
     const pos = data.geo ? await locate() : null;
     if (data.requireGeo && !pos) { btn.disabled = false; toast('فعّل خدمة الموقع في جوالك واسمح للمتصفح باستخدامها', true); return; }
-    const r = await act(btn, () => api('/api/punch', { method: 'POST', body: { type, note, exit_id: exitId, client_ts: Date.now(), ...(pos || {}) } }), `تم تسجيل ${type === 'back' ? 'رجوعك' : PUNCH[type]} الساعة ${fmtT(nowMs())}`);
+    const r = await act(btn, () => withSelfie((extra) => api('/api/punch', { method: 'POST', body: { type, note, exit_id: exitId, client_ts: Date.now(), ...(pos || {}), ...extra } })), `تم تسجيل ${type === 'back' ? 'رجوعك' : PUNCH[type]} الساعة ${fmtT(nowMs())}`);
     if (r) { burst(btn); data = r; draw(); }
   }
   draw();

@@ -146,6 +146,14 @@ export async function waSendDocument(to, buffer, fileName, caption = '', mimetyp
   remember(await sock.sendMessage(hit.jid, { document: buffer, fileName, mimetype, caption }));
 }
 
+/** A photo with a caption (the verification selfie to supervisors). */
+export async function waSendImage(to, buffer, caption = '') {
+  if (!waConnected()) throw Object.assign(new Error('واتساب غير مربوط حالياً'), { defer: true });
+  const [hit] = await sock.onWhatsApp(`${to}@s.whatsapp.net`);
+  if (!hit?.exists) throw new Error(`الرقم ${to} غير مسجّل في واتساب`);
+  remember(await sock.sendMessage(hit.jid, { image: buffer, caption }));
+}
+
 export async function waLogout() {
   stopped = true;
   const s = sock;

@@ -32,6 +32,7 @@ import { addExchange, exchangeTick, listExchanges, receiveManually, removeExchan
 import { registerAdditions, additionJobs } from './additions/index.js';
 import { logChange } from './additions/changelog.js';
 import { deductionNotice } from './additions/alerts.js';
+import { parseSelfie, saveSelfie, suspicionAlert } from './additions/selfie.js';
 import { pushTo, removeSubscription, saveSubscription, vapidKeys } from './push.js';
 import { renderDailyReport, renderMonthlyReport, renderPayslip } from './print.js';
 import * as msg from './messages.js';
@@ -217,7 +218,10 @@ export function createApp(db) {
       if (!permit) throw new HttpError(400, 'إذن الخروج غير صالح');
       body.note = `بإذن ${permit.minutes} دقيقة: ${permit.reason}`;
     }
-    const p = recordPunch(db, user, body, { ip: clientIp(req), device: dev.id, userAgent: req.headers['user-agent'] || '' });
+    const selfie = parseSelfie(body.selfie);
+    const p = recordPunch(db, user, body, { ip: clientIp(req), device: dev.id, userAgent: req.headers['user-agent'] || '', requireSelfie: !!getSettings(db).selfie_on_suspicion, hasSelfie: !!selfie });
+    if (selfie) saveSelfie(db, user, p, selfie);
+    suspicionAlert(db, user, p, { permitted: !!permit, selfie: !!selfie });
     if (permit) startExit(db, user, permit.id, p.ts);
     const back = p.type === 'back' ? endExit(db, user, p.ts) : null;
     const serious = p.flags.filter((f) => f !== 'new_device');
