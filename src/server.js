@@ -29,6 +29,8 @@ import { handleIncoming } from './commands.js';
 import { currentExit, endExit, exitTick, requestExit, startExit } from './exits.js';
 import { SCAN_KINDS, SCAN_METRIC, addScan, removeScan, scanCounts, scanList } from './scans.js';
 import { addExchange, exchangeTick, listExchanges, receiveManually, removeExchange, updateExchange } from './exchanges.js';
+import { registerAdditions, additionJobs } from './additions/index.js';
+import { logChange } from './additions/changelog.js';
 import { pushTo, removeSubscription, saveSubscription, vapidKeys } from './push.js';
 import { renderDailyReport, renderMonthlyReport, renderPayslip } from './print.js';
 import * as msg from './messages.js';
@@ -53,6 +55,9 @@ const num = (v, lo = 0, hi = 1e9) => {
   return Math.round(n * 100) / 100;
 };
 const text = (v, max = 500) => String(v ?? '').trim().slice(0, max);
+const PUNCH_LABEL = { in: 'حضور', out: 'انصراف', leave: 'خروج مؤقت', back: 'عودة' };
+const EXCUSE_LABEL = { leave: 'إجازة', sick: 'إجازة مرضية', holiday: 'عطلة رسمية', excused: 'عذر مقبول' };
+const STOCK_STATUS_LABEL = { ready: 'جاهز للإرسال', sent: 'أُرسل للتاجر', settled: 'تمت التسوية' };
 /** A supervisor can't approve, excuse or edit their own attendance or requests: that stays with the owner. */
 const notSelf = (user, targetId) => {
   if (user.role !== 'admin' && Number(targetId) === user.id) throw new HttpError(403, 'ما تقدر تعتمد أو تعدّل سجلك بنفسك، هذا عند المدير');
@@ -399,6 +404,7 @@ export function createApp(db) {
     const status = ['ready', 'sent', 'settled'].includes(b.status) ? b.status : null;
     if (!status) throw new HttpError(400, 'حالة غير معروفة');
     const note = b.note !== undefined ? text(b.note, 300) : row.status_note;
+    if (status !== row.status) logChange(db, { actor: user, area: 'returns', action: 'حالة مرتجع للتاجر', ref: `${row.party} · ${b.all ? 'الفاتورة كاملة' : row.sku}`, before: STOCK_STATUS_LABEL[row.status] || row.status || '—', after: STOCK_STATUS_LABEL[status], reason: note });
     // A whole invoice moves together unless one line is asked for.
     const ids = b.all ? db.prepare("SELECT id FROM stock_moves WHERE kind = 'merchant_return' AND date = ? AND party = ? AND invoice_no = ?").all(row.date, row.party, row.invoice_no).map((x) => x.id) : [row.id];
     const upd = db.prepare('UPDATE stock_moves SET status = ?, status_note = ?, status_at = ? WHERE id = ?');
@@ -457,19 +463,32 @@ export function createApp(db) {
   }, { auth: true });
   r.post('/api/exchanges', async ({ req, user }) => {
     exAccess(user, true);
-    return addExchange(db, user, parseJson(await readBody(req)));
+    const b = parseJson(await readBody(req));
+    const out = addExchange(db, user, b);
+    logChange(db, { actor: user, area: 'returns', action: 'تسجيل شحنة إرجاع', ref: out.exchange.tracking, before: '—', after: `${out.exchange.kind === 'refund' ? 'استرجاع' : 'استبدال'}${out.exchange.order_no ? ` · طلب ${out.exchange.order_no}` : ''}`, reason: b.note });
+    return out;
   }, { auth: true });
   r.put('/api/exchanges/:id', async ({ req, params, user }) => {
     exAccess(user, true);
-    return updateExchange(db, user, params.id, parseJson(await readBody(req)), isManager(user));
+    const was = db.prepare('SELECT * FROM exchanges WHERE id = ?').get(Number(params.id));
+    const b = parseJson(await readBody(req));
+    const out = updateExchange(db, user, params.id, b, isManager(user));
+    logChange(db, { actor: user, area: 'returns', action: 'ملاحظة شحنة إرجاع', ref: was.tracking, before: was.note || '—', after: out.exchange.note || '—', reason: 'متابعة' });
+    return out;
   }, { auth: true });
   r.post('/api/exchanges/:id/receive', ({ params, user }) => {
     requireManager(user);
-    return receiveManually(db, user, params.id);
+    const out = receiveManually(db, user, params.id);
+    logChange(db, { actor: user, area: 'returns', action: 'تأكيد وصول شحنة إرجاع يدوياً', ref: out.exchange.tracking, before: 'لم تصل', after: 'وصلت', reason: 'وصلت بدون ملصق ينقرأ' });
+    return out;
   }, { auth: true });
-  r.delete('/api/exchanges/:id', ({ params, user }) => {
+  r.delete('/api/exchanges/:id', async ({ req, params, user }) => {
     exAccess(user, true);
-    return removeExchange(db, user, params.id, isManager(user));
+    const was = db.prepare('SELECT * FROM exchanges WHERE id = ?').get(Number(params.id));
+    const why = parseJson(await readBody(req)).reason;
+    const out = removeExchange(db, user, params.id, isManager(user));
+    logChange(db, { actor: user, area: 'returns', action: 'حذف شحنة إرجاع', ref: was.tracking, before: was.received_at ? 'وصلت' : 'لم تصل', after: 'محذوفة', reason: why });
+    return out;
   }, { auth: true });
 
   // ------------------------------------------------------------ release / shortage requests
@@ -600,12 +619,17 @@ export function createApp(db) {
     requireManager(user);
     const b = parseJson(await readBody(req));
     notSelf(user, b.user_id);
-    return { id: managerPunch(db, user, b) };
+    const id = managerPunch(db, user, b);
+    logChange(db, { actor: user, area: 'attendance', action: 'إضافة بصمة يدوية', target: Number(b.user_id), ref: `${b.date} ${b.time}`, before: '—', after: `${PUNCH_LABEL[b.type] || b.type} ${b.time}`, reason: b.note });
+    return { id };
   }, { auth: true });
   r.delete('/api/punches/:id', async ({ req, params, user }) => {
     requireManager(user);
-    notSelf(user, db.prepare('SELECT user_id FROM punches WHERE id = ?').get(Number(params.id))?.user_id);
-    voidPunch(db, user, params.id, parseJson(await readBody(req)).reason);
+    const was = db.prepare('SELECT * FROM punches WHERE id = ?').get(Number(params.id));
+    notSelf(user, was?.user_id);
+    const why = parseJson(await readBody(req)).reason;
+    voidPunch(db, user, params.id, why);
+    logChange(db, { actor: user, area: 'attendance', action: 'إلغاء بصمة', target: was.user_id, ref: was.date, before: `${PUNCH_LABEL[was.type] || was.type} ${localTime(was.ts)}`, after: 'ملغاة', reason: why });
     return { ok: true };
   }, { auth: true });
   r.get('/api/flags', ({ url, user }) => {
@@ -647,17 +671,20 @@ export function createApp(db) {
         db.prepare('INSERT INTO excuses (user_id, date, kind, note, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(userId, d, kind, text(b.note, 300), user.id, Date.now());
       }
       audit(db, user.id, 'excuse.add', userId, { kind, from, to, note: text(b.note, 300) });
+      logChange(db, { actor: user, area: 'attendance', action: kind === 'holiday' ? 'إضافة عطلة رسمية' : 'إضافة إجازة أو عذر', target: userId, ref: from === to ? from : `${from} ← ${to}`, before: '—', after: EXCUSE_LABEL[kind], reason: b.note });
     });
     return { ok: true };
   }, { auth: true });
-  r.delete('/api/excuses/:id', ({ params, user }) => {
+  r.delete('/api/excuses/:id', async ({ req, params, user }) => {
     requireManager(user);
+    const why = parseJson(await readBody(req)).reason;
     const e = db.prepare('SELECT * FROM excuses WHERE id = ?').get(Number(params.id));
     if (!e) throw new HttpError(404, 'غير موجود');
     if (e.user_id === null && user.role !== 'admin') throw new HttpError(403, 'العطلات الرسمية يعدّلها المدير');
     notSelf(user, e.user_id);
     db.prepare('DELETE FROM excuses WHERE id = ?').run(e.id);
     audit(db, user.id, 'excuse.delete', e.user_id, e);
+    logChange(db, { actor: user, area: 'attendance', action: 'حذف إجازة أو عذر', target: e.user_id, ref: e.date, before: EXCUSE_LABEL[e.kind] || e.kind, after: 'محذوف', reason: why });
     return { ok: true };
   }, { auth: true });
 
@@ -679,16 +706,19 @@ export function createApp(db) {
     const res = db.prepare('INSERT INTO deductions (user_id, date, amount, category, reason, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
       .run(userId, date, amount, category, text(b.reason, 300), user.id, Date.now());
     audit(db, user.id, 'deduction.add', userId, { date, amount, category, reason: text(b.reason, 300) });
+    logChange(db, { actor: user, area: 'salary', action: 'خصم', target: userId, ref: date, before: '—', after: `${amount} ر.س · ${DEDUCTION_LABELS[category]}`, reason: b.reason });
     notifyEmployee(db, userId, 'deduction', msg.deduction({ amount, date, category: DEDUCTION_LABELS[category], reason: text(b.reason, 200), link: appLink(db) }));
     return { id: Number(res.lastInsertRowid) };
   }, { auth: true });
-  r.delete('/api/deductions/:id', ({ params, user }) => {
+  r.delete('/api/deductions/:id', async ({ req, params, user }) => {
     requireAdmin(user);
+    const why = parseJson(await readBody(req)).reason;
     const d = db.prepare('SELECT * FROM deductions WHERE id = ?').get(Number(params.id));
     if (!d) throw new HttpError(404, 'الخصم غير موجود');
     assertOpen(db, d.date);
     db.prepare('DELETE FROM deductions WHERE id = ?').run(d.id);
     audit(db, user.id, 'deduction.delete', d.user_id, d);
+    logChange(db, { actor: user, area: 'salary', action: 'حذف خصم', target: d.user_id, ref: d.date, before: `${d.amount} ر.س · ${DEDUCTION_LABELS[d.category] || d.category}`, after: 'محذوف', reason: why });
     return { ok: true };
   }, { auth: true });
   r.get('/api/debts', ({ url, user }) => {
@@ -707,17 +737,20 @@ export function createApp(db) {
     const res = db.prepare('INSERT INTO debts (user_id, date, kind, amount, note, from_salary, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
       .run(userId, date, kind, amount, text(b.note, 300), b.from_salary === false ? 0 : 1, user.id, Date.now());
     audit(db, user.id, `debt.${kind}`, userId, { date, amount, note: text(b.note, 300) });
+    logChange(db, { actor: user, area: 'salary', action: kind === 'loan' ? 'سلفة' : 'سداد سلفة', target: userId, ref: date, before: '—', after: `${amount} ر.س`, reason: b.note });
     const bal = db.prepare("SELECT COALESCE(SUM(CASE WHEN kind = 'loan' THEN amount ELSE -amount END), 0) b FROM debts WHERE user_id = ?").get(userId).b;
     notifyEmployee(db, userId, `debt_${kind}`, msg.debt({ kind, amount, balance: Math.round(bal * 100) / 100, note: text(b.note, 200), link: appLink(db) }));
     return { id: Number(res.lastInsertRowid) };
   }, { auth: true });
-  r.delete('/api/debts/:id', ({ params, user }) => {
+  r.delete('/api/debts/:id', async ({ req, params, user }) => {
     requireAdmin(user);
+    const why = parseJson(await readBody(req)).reason;
     const d = db.prepare('SELECT * FROM debts WHERE id = ?').get(Number(params.id));
     if (!d) throw new HttpError(404, 'السجل غير موجود');
     assertOpen(db, d.date);
     db.prepare('DELETE FROM debts WHERE id = ?').run(d.id);
     audit(db, user.id, 'debt.delete', d.user_id, d);
+    logChange(db, { actor: user, area: 'salary', action: d.kind === 'loan' ? 'حذف سلفة' : 'حذف سداد', target: d.user_id, ref: d.date, before: `${d.amount} ر.س`, after: 'محذوف', reason: why });
     return { ok: true };
   }, { auth: true });
   r.get('/api/payroll', ({ url, user }) => {
@@ -728,15 +761,20 @@ export function createApp(db) {
   r.post('/api/payroll/close', async ({ req, user }) => {
     requireAdmin(user);
     const b = parseJson(await readBody(req));
-    return closeMonth(db, user, needMonth(b.month), { send: b.send !== false });
+    const out = closeMonth(db, user, needMonth(b.month), { send: b.send !== false });
+    logChange(db, { actor: user, area: 'salary', action: 'إقفال مسير الرواتب', ref: needMonth(b.month), before: 'مفتوح', after: 'مقفل', reason: b.reason || 'إقفال الشهر' });
+    return out;
   }, { auth: true });
   r.post('/api/payroll/payslips', async ({ req, user }) => {
     requireAdmin(user);
     return { ok: true, sent: sendPayslips(db, needMonth(parseJson(await readBody(req)).month), { again: true }) };
   }, { auth: true });
-  r.delete('/api/payroll/close/:month', ({ params, user }) => {
+  r.delete('/api/payroll/close/:month', async ({ req, params, user }) => {
     requireAdmin(user);
-    return reopenMonth(db, user, needMonth(params.month));
+    const why = parseJson(await readBody(req)).reason;
+    const out = reopenMonth(db, user, needMonth(params.month));
+    logChange(db, { actor: user, area: 'salary', action: 'فتح مسير مقفل', ref: needMonth(params.month), before: 'مقفل', after: 'مفتوح', reason: why });
+    return out;
   }, { auth: true });
 
   // ------------------------------------------------------------ performance & analytics
@@ -822,13 +860,16 @@ export function createApp(db) {
     requireAdmin(user);
     const existing = db.prepare('SELECT * FROM users WHERE id = ?').get(Number(params.id));
     if (!existing) throw new HttpError(404, 'الموظف غير موجود');
-    const f = applyUser(parseJson(await readBody(req)), existing);
+    const body = parseJson(await readBody(req));
+    const f = applyUser(body, existing);
+    const salaryChanged = 'salary' in f && Number(f.salary) !== Number(existing.salary);
     const keys = Object.keys(f);
     if (!keys.length) return { ok: true };
     db.prepare(`UPDATE users SET ${keys.map((k) => `${k} = ?`).join(', ')} WHERE id = ?`).run(...keys.map((k) => f[k]), existing.id);
     if (f.password_hash || f.active === 0) db.prepare('DELETE FROM sessions WHERE user_id = ? AND user_id != ?').run(existing.id, user.id);
     const changed = keys.map((k) => (k === 'password_hash' ? 'password' : k));
     audit(db, user.id, 'user.update', existing.id, { changed, salary: 'salary' in f ? { from: existing.salary, to: f.salary } : undefined });
+    if (salaryChanged) logChange(db, { actor: user, area: 'salary', action: 'تعديل الراتب', target: existing.id, before: `${existing.salary} ر.س`, after: `${f.salary} ر.س`, reason: body.salary_reason });
     return { ok: true };
   }, { auth: true });
   r.get('/api/settings', ({ req, user }) => { requireAdmin(user); return { ...getSettings(db), your_ip: clientIp(req), whatsapp: providerStatus() }; }, { auth: true });
@@ -987,6 +1028,7 @@ export function createApp(db) {
     send(res, 200, renderMonthlyReport(d, user.role === 'admin'), { 'Content-Type': 'text/html; charset=utf-8', ...SECURITY_HEADERS });
   }, { auth: true, page: true });
 
+  registerAdditions(r, db);
   r.get('/health', () => ({ ok: true, time: localTime(Date.now()) }));
 
   return async function handle(req, res) {
@@ -1065,7 +1107,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   if (boot) {
     console.log(`حساب المدير: ${boot.username}${boot.password ? ` / كلمة المرور المؤقتة: ${boot.password}` : ''}`);
   }
-  startNotifier(db, [monthlyTick, exitTick, exchangeTick]);
+  startNotifier(db, [monthlyTick, exitTick, exchangeTick, ...additionJobs]);
   waOnMessage((phone, text) => handleIncoming(db, phone, text));
   waAutoStart();
   const backup = () => dailyBackup(db).catch((e) => console.error('backup failed', e));

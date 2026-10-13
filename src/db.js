@@ -330,6 +330,171 @@ const MIGRATIONS = [
   CREATE INDEX exchanges_open ON exchanges(received_at, date);
   UPDATE users SET perms = json_insert(perms, '$[#]', 'exchanges') WHERE username = 'monther' AND perms NOT LIKE '%"exchanges"%';
   `,
+  // v9 (additions): change log, broadcasts, decisions, chat, shortages, corrections, delegated deductions, notes.
+  // New tables only; nothing existing is altered.
+  `
+  -- every edit to attendance, salary and returns: who, when, value before and after, and why
+  CREATE TABLE change_log (
+    id INTEGER PRIMARY KEY,
+    ts INTEGER NOT NULL,
+    actor_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    area TEXT NOT NULL CHECK (area IN ('attendance', 'salary', 'returns')),
+    action TEXT NOT NULL,
+    target_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    ref TEXT NOT NULL DEFAULT '',
+    before TEXT NOT NULL DEFAULT '',
+    after TEXT NOT NULL DEFAULT '',
+    reason TEXT NOT NULL DEFAULT ''
+  );
+  CREATE INDEX change_log_ts ON change_log(ts);
+  CREATE INDEX change_log_target ON change_log(target_user_id, ts);
+
+  -- custom WhatsApp messages from a supervisor
+  CREATE TABLE broadcasts (
+    id INTEGER PRIMARY KEY,
+    created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at INTEGER NOT NULL,
+    body TEXT NOT NULL,
+    recipients TEXT NOT NULL DEFAULT '[]',
+    queued INTEGER NOT NULL DEFAULT 0
+  );
+
+  -- administrative decisions issued as PDF, with read acknowledgements
+  CREATE TABLE decisions (
+    id INTEGER PRIMARY KEY,
+    seq INTEGER NOT NULL,
+    hijri_year INTEGER NOT NULL,
+    number TEXT NOT NULL,
+    title TEXT NOT NULL,
+    subtitle TEXT NOT NULL DEFAULT '',
+    preamble TEXT NOT NULL DEFAULT '',
+    articles TEXT NOT NULL DEFAULT '[]',
+    issued_date TEXT NOT NULL,
+    effective_date TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'issued')),
+    created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at INTEGER NOT NULL,
+    issued_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    issued_at INTEGER,
+    UNIQUE (hijri_year, seq)
+  );
+  CREATE TABLE decision_recipients (
+    decision_id INTEGER NOT NULL REFERENCES decisions(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    token TEXT NOT NULL UNIQUE,
+    file_status TEXT NOT NULL DEFAULT 'pending' CHECK (file_status IN ('pending', 'sent', 'failed', 'no_phone')),
+    file_attempts INTEGER NOT NULL DEFAULT 0,
+    file_error TEXT,
+    file_sent_at INTEGER,
+    seen_at INTEGER,
+    ack_at INTEGER,
+    PRIMARY KEY (decision_id, user_id)
+  );
+
+  -- internal chat: one-to-one or group; whoever starts it picks the members
+  CREATE TABLE chats (
+    id INTEGER PRIMARY KEY,
+    title TEXT NOT NULL DEFAULT '',
+    is_group INTEGER NOT NULL DEFAULT 0,
+    created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at INTEGER NOT NULL,
+    last_at INTEGER NOT NULL
+  );
+  CREATE TABLE chat_members (
+    chat_id INTEGER NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    last_read INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (chat_id, user_id)
+  );
+  CREATE TABLE chat_messages (
+    id INTEGER PRIMARY KEY,
+    chat_id INTEGER NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
+    user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    body TEXT NOT NULL,
+    ts INTEGER NOT NULL
+  );
+  CREATE INDEX chat_messages_chat ON chat_messages(chat_id, id);
+  CREATE INDEX chat_members_user ON chat_members(user_id);
+
+  -- products out of stock, followed until supplied (in full or in parts)
+  CREATE TABLE shortages (
+    id INTEGER PRIMARY KEY,
+    sku TEXT NOT NULL,
+    name TEXT NOT NULL DEFAULT '',
+    qty INTEGER NOT NULL DEFAULT 1,
+    qty_done INTEGER NOT NULL DEFAULT 0,
+    priority TEXT NOT NULL DEFAULT 'normal' CHECK (priority IN ('low', 'normal', 'high', 'urgent')),
+    assignee_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    due_date TEXT,
+    status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'partial', 'done', 'cancelled')),
+    note TEXT NOT NULL DEFAULT '',
+    image TEXT,
+    created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    done_at INTEGER,
+    done_by INTEGER REFERENCES users(id) ON DELETE SET NULL
+  );
+  CREATE INDEX shortages_status ON shortages(status);
+  CREATE TABLE shortage_events (
+    id INTEGER PRIMARY KEY,
+    shortage_id INTEGER NOT NULL REFERENCES shortages(id) ON DELETE CASCADE,
+    ts INTEGER NOT NULL,
+    user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    kind TEXT NOT NULL,
+    qty INTEGER NOT NULL DEFAULT 0,
+    note TEXT NOT NULL DEFAULT ''
+  );
+  CREATE INDEX shortage_events_item ON shortage_events(shortage_id, ts);
+
+  -- an employee asks to correct a punch; a supervisor approves (the punch is then added) or rejects
+  CREATE TABLE corrections (
+    id INTEGER PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    date TEXT NOT NULL,
+    type TEXT NOT NULL CHECK (type IN ('in', 'out', 'leave', 'back')),
+    time TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),
+    created_at INTEGER NOT NULL,
+    decided_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    decided_at INTEGER,
+    response TEXT NOT NULL DEFAULT '',
+    punch_id INTEGER
+  );
+  CREATE INDEX corrections_status ON corrections(status, created_at);
+
+  -- deductions recorded by a delegated employee, applied to payroll only once a supervisor approves
+  CREATE TABLE deduction_requests (
+    id INTEGER PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    amount REAL NOT NULL,
+    category TEXT NOT NULL,
+    date TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),
+    decided_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    decided_at INTEGER,
+    response TEXT NOT NULL DEFAULT '',
+    deduction_id INTEGER
+  );
+  CREATE INDEX deduction_requests_status ON deduction_requests(status, created_at);
+
+  -- notes raised on an employee (seen by supervisors)
+  CREATE TABLE employee_notes (
+    id INTEGER PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    body TEXT NOT NULL,
+    created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX employee_notes_user ON employee_notes(user_id, created_at);
+
+  -- Basem raises shortages, so he manages the new shortages list
+  UPDATE users SET perms = json_insert(perms, '$[#]', 'shortages') WHERE username = 'basem' AND perms NOT LIKE '%"shortages"%';
+  `,
 ];
 
 export function openDb(path) {

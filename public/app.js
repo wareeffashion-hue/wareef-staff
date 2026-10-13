@@ -1,5 +1,6 @@
 // Wareef staff app: one file, no build step. Hash routes, server-rendered data via JSON API.
 import { startInk } from './ink.js';
+import { mountAdditions, addNav, askReason } from './additions.js';
 
 // ------------------------------------------------------------------ helpers
 const $ = (s, el = document) => el.querySelector(s);
@@ -317,7 +318,8 @@ function forgotPassword(username = '') {
   });
 }
 
-function navItems() {
+const navItems = () => addNav(baseNavItems());
+function baseNavItems() {
   if (ME.role === 'admin') {
     return [
       ['dashboard', 'لوحة اليوم', 'home'], ['attendance', 'الحضور والانصراف', 'clock'], ['leaves', 'الإجازات والاستئذان', 'sun'], ['payroll', 'الرواتب', 'wallet'],
@@ -1045,7 +1047,7 @@ PAGES.attendance = async () => {
     e.preventDefault();
     if (await act($('button', e.target), () => api('/api/excuses', { method: 'POST', body: formData(e.target) }), 'تم الحفظ')) refresh();
   };
-  $$('[data-ex]', pg).forEach((b) => { b.onclick = async () => { if (await act(b, () => api(`/api/excuses/${b.dataset.ex}`, { method: 'DELETE' }), 'تم الحذف')) refresh(); }; });
+  $$('[data-ex]', pg).forEach((b) => { b.onclick = async () => { const reason = askReason('سبب حذف العذر'); if (reason && await act(b, () => api(`/api/excuses/${b.dataset.ex}`, { method: 'DELETE', body: { reason } }), 'تم الحذف')) refresh(); }; });
 };
 
 // ------------------------------------------------------------------ manager: payroll
@@ -1084,7 +1086,8 @@ PAGES.payroll = async () => {
   const reopen = $('#pay-open', pg);
   if (reopen) reopen.onclick = async () => {
     if (!confirm('فتح الشهر يسمح بتعديل الخصومات والسلف، وتعود الأرقام تتحدث. متأكد؟')) return;
-    if (await act(reopen, () => api(`/api/payroll/close/${month}`, { method: 'DELETE' }), 'تم فتح الشهر')) refresh();
+    const reason = askReason('سبب فتح الشهر');
+    if (reason && await act(reopen, () => api(`/api/payroll/close/${month}`, { method: 'DELETE', body: { reason } }), 'تم فتح الشهر')) refresh();
   };
 };
 
@@ -1146,17 +1149,19 @@ PAGES.money = async () => {
   $('#ln-kind', pg).onchange = (e) => { $('#ln-sal-l', pg).hidden = e.target.value !== 'repayment'; };
   $('#dF', pg).onsubmit = async (e) => { e.preventDefault(); if (await act($('button', e.target), () => api('/api/deductions', { method: 'POST', body: formData(e.target) }), 'تم اعتماد الخصم')) refresh(); };
   $('#lF', pg).onsubmit = async (e) => { e.preventDefault(); if (await act($('button', e.target), () => api('/api/debts', { method: 'POST', body: formData(e.target) }), 'تم الحفظ')) refresh(); };
-  confirmDelete(pg, '[data-dd]', (id) => `/api/deductions/${id}`);
-  confirmDelete(pg, '[data-dl]', (id) => `/api/debts/${id}`);
+  confirmDelete(pg, '[data-dd]', (id) => `/api/deductions/${id}`, { reason: true });
+  confirmDelete(pg, '[data-dl]', (id) => `/api/debts/${id}`, { reason: true });
 };
 
 /** Two-step delete: first click arms the button, second click deletes. */
-function confirmDelete(root, sel, urlOf) {
+function confirmDelete(root, sel, urlOf, { reason: needReason = false } = {}) {
   $$(sel, root).forEach((b) => {
     b.onclick = async () => {
       if (!b.dataset.armed) { b.dataset.armed = '1'; b.textContent = 'تأكيد الحذف؟'; setTimeout(() => { delete b.dataset.armed; b.textContent = 'حذف'; }, 4000); return; }
       const id = Object.values(b.dataset).find((v) => /^\d+$/.test(v));
-      if (await act(b, () => api(urlOf(id), { method: 'DELETE' }), 'تم الحذف')) refresh();
+      const reason = needReason ? askReason('سبب الحذف') : '';
+      if (reason === null) return;
+      if (await act(b, () => api(urlOf(id), { method: 'DELETE', body: reason ? { reason } : undefined }), 'تم الحذف')) refresh();
     };
   });
 }
@@ -1367,7 +1372,8 @@ PAGES.exchanges = async () => {
     if (confirm('تأكيد إن الشحنة وصلت المستودع؟') && await act(b, () => api(`/api/exchanges/${b.dataset.rcv}/receive`, { method: 'POST' }), 'تم التسجيل ووصل الإشعار')) refresh();
   }; });
   $$('[data-del]', pg).forEach((b) => { b.onclick = async () => {
-    if (confirm('حذف شحنة الإرجاع؟') && await act(b, () => api(`/api/exchanges/${b.dataset.del}`, { method: 'DELETE' }), 'تم الحذف')) refresh();
+    const reason = askReason('سبب حذف شحنة الإرجاع');
+    if (reason && await act(b, () => api(`/api/exchanges/${b.dataset.del}`, { method: 'DELETE', body: { reason } }), 'تم الحذف')) refresh();
   }; });
 };
 
@@ -1556,6 +1562,10 @@ PAGES.staff = async () => {
         Object.assign(body, { salary: f.salary || 0, phone: f.phone || '', day_off: f.day_off, perms: d.permissions.filter((p) => f[`perm_${p.key}`]).map((p) => p.key), periods: d.periods.filter((p) => f[`p_${p.id}`]).map((p) => p.id) });
         if (body.periods.length === d.periods.length) body.periods = null;
         if (u) body.active = f.active;
+        if (u && Number(body.salary) !== Number(u.salary || 0)) {
+          body.salary_reason = askReason(`سبب تعديل الراتب من ${money(u.salary)} إلى ${money(body.salary)}`);
+          if (body.salary_reason === null) return;
+        }
       }
       const ok = await act($('button', e.target), () => api(u ? `/api/users/${u.id}` : '/api/users', { method: u ? 'PUT' : 'POST', body }), 'تم الحفظ');
       if (ok) { dl.close(); refresh(); }
@@ -2067,4 +2077,8 @@ PAGES.scan = async () => {
 };
 
 startInk();
+mountAdditions({
+  $, $$, esc, api, act, toast, modal, render, refresh, PAGES, pill, statusPill, table, opt, icon, ICONS, fmtDate, fmtT, localIso, today, int, money, mn, formData, DED,
+  me: () => ME,
+});
 boot();
