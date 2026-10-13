@@ -40,9 +40,10 @@ export function sendPayslips(db, month, { again = false } = {}) {
   const c = closedMonth(db, month);
   if (!c) throw new HttpError(400, 'أقفل الشهر أولاً');
   const link = appLink(db);
+  const hide = !!getSettings(db).hide_deductions; // the employee sees the net, not the deduction amounts
   let sent = 0;
   for (const r of JSON.parse(c.snapshot)) {
-    if (notifyEmployee(db, r.userId, 'payslip', msg.payslip({ name: r.name, month, r, link }), `payslip:${month}:${r.userId}:${c.closed_at}${again ? `:${Date.now()}` : ''}`)) sent++;
+    if (notifyEmployee(db, r.userId, 'payslip', msg.payslip({ name: r.name, month, r: hide ? { ...r, deductions: 0 } : r, link }), `payslip:${month}:${r.userId}:${c.closed_at}${again ? `:${Date.now()}` : ''}`)) sent++;
   }
   return sent;
 }

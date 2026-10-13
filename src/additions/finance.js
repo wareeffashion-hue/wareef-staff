@@ -9,7 +9,7 @@ import { HttpError } from '../http.js';
 import { localDate, monthBounds } from '../time.js';
 import { assertOpen, payrollFor } from '../monthly.js';
 import { DEDUCTION_LABELS, debtBalances, debtRows, deductionRows } from '../reports.js';
-import { link, msg, toSupervisors, toUser } from './alerts.js';
+import { deductionNotice, link, msg, toSupervisors, toUser } from './alerts.js';
 import { logChange } from './changelog.js';
 import { isFinance, isSup, needDate, num, requireFinance, requireSup, text } from './util.js';
 
@@ -31,6 +31,7 @@ export function financeOverview(db, user, { month }) {
     debts: debtRows(db).filter((d) => d.date >= from && d.date <= to),
     balances: debtBalances(db),
     people: db.prepare("SELECT id, name FROM users WHERE role = 'employee' AND active = 1 ORDER BY name").all(),
+    canLock: user.role === 'admin' || user.perms.includes('payroll_reopen'),
   };
 }
 
@@ -128,7 +129,7 @@ export function decideDeduction(db, user, id, body) {
       .run(status, user.id, Date.now(), response, dedId, r.id);
   });
   if (status === 'approved') {
-    toUser(db, r.user_id, 'deduction', msg.deduction({ amount: r.amount, date: r.date, category: DEDUCTION_LABELS[r.category], reason: r.reason.slice(0, 200), link: link(db) }), `deduction_request_ok:${r.id}`);
+    toUser(db, r.user_id, 'deduction', deductionNotice(db, { amount: r.amount, date: r.date, category: DEDUCTION_LABELS[r.category], reason: r.reason.slice(0, 200), link: link(db) }), `deduction_request_ok:${r.id}`);
   }
   toUser(db, r.created_by, 'deduction_request_status', msg.card({ icon: status === 'approved' ? '✅' : '⛔', title: status === 'approved' ? 'اعتُمد الخصم المسجّل' : 'رُفض الخصم المسجّل',
     fields: [['الموظف', db.prepare('SELECT name FROM users WHERE id = ?').get(r.user_id)?.name || ''], ['المبلغ', `${r.amount} ر.س`]], quote: response || undefined }), `deduction_request_status:${r.id}`);

@@ -7,14 +7,33 @@ import { getSettings } from './settings.js';
 const round2 = (n) => Math.round(n * 100) / 100;
 const mins = (ms) => Math.max(0, Math.round(ms / MIN));
 
-/** Scheduled periods for one employee on one date ([] = not a working day). */
-export function periodsFor(user, date, schedule, holiday = false) {
+/**
+ * Scheduled periods for one employee on one date ([] = not a working day).
+ * `exception` is a one-off change of hours for that date: one for this employee replaces the day
+ * (even a day off); one for everyone keeps the weekly day off and each employee's own periods.
+ */
+export function periodsFor(user, date, schedule, holiday = false, exception = null) {
   if (holiday) return [];
+  if (exception?.user_id) return exception.periods;
   const wd = weekday(date);
   if (user.day_off !== null && user.day_off !== undefined && Number(user.day_off) === wd) return [];
   const assigned = user.periods ? (typeof user.periods === 'string' ? JSON.parse(user.periods) : user.periods) : null;
+  if (exception) {
+    const known = new Set(Object.values(schedule.days).flat().map((p) => p.id));
+    return exception.periods.filter((p) => !assigned || assigned.includes(p.id) || !known.has(p.id));
+  }
   return (schedule.days[wd] || []).filter((p) => !assigned || assigned.includes(p.id));
 }
+
+/** One-off hour changes in a date range, keyed "<userId or 0>|<date>". */
+export function loadExceptions(db, from, to) {
+  const map = new Map();
+  for (const e of db.prepare('SELECT date, user_id, periods FROM shift_exceptions WHERE date BETWEEN ? AND ?').all(from, to)) {
+    map.set(`${e.user_id || 0}|${e.date}`, { user_id: e.user_id, periods: JSON.parse(e.periods) });
+  }
+  return map;
+}
+export const exceptionOf = (map, userId, date) => map.get(`${userId}|${date}`) || map.get(`0|${date}`) || null;
 
 /**
  * @param {object} o
@@ -27,6 +46,7 @@ export function periodsFor(user, date, schedule, holiday = false) {
  * @param {number} o.salary          monthly salary, for the suggested deduction
  * @param {number} o.lateRate        minutes of lateness per riyal of fine (0 = priced by salary)
  * @param {number} o.now             epoch ms
+ * @param {object} o.reviews         period id → 'pending' | 'approved': a missing checkout under review, or confirmed as absence
  */
 /** Merge overlapping [start, end] ranges. */
 function merge(list) {
@@ -42,7 +62,7 @@ function merge(list) {
  * `permits` are approved hourly permissions ([start, end] epoch ms): time inside them counts as
  * covered for lateness, early leave, exits and absence, but not as time worked.
  */
-export function computeDay({ date, punches, periods, excuse = null, grace = 0, maxExit = 30, salary = 0, lateRate = 0, now = Date.now(), permits = [] }) {
+export function computeDay({ date, punches, periods, excuse = null, grace = 0, maxExit = 30, salary = 0, lateRate = 0, now = Date.now(), permits = [], reviews = {} }) {
   const sorted = [...punches].sort((a, b) => a.ts - b.ts);
   const flags = new Set();
   const intervals = []; // [start, end] while present
@@ -112,6 +132,12 @@ export function computeDay({ date, punches, periods, excuse = null, grace = 0, m
     row.exit = mins(until - s - covered - lateMs - earlyMs);
     return row;
   });
+  // a missing checkout the supervisor confirmed counts the whole period as absence
+  for (const row of out) {
+    const r = reviews[row.id];
+    if (r === 'approved') Object.assign(row, { absent: true, present: 0, permitted: 0, late: 0, early: 0, exit: 0, firstIn: null, lastOut: null, review: 'approved' });
+    else if (r === 'pending') row.review = 'pending';
+  }
 
   const scheduledMinutes = out.reduce((t, p) => t + p.minutes, 0);
   const total = mins(intervals.reduce((t, [a, b]) => t + (b - a), 0));
@@ -151,6 +177,7 @@ export function computeDay({ date, punches, periods, excuse = null, grace = 0, m
   else if (res.absentPeriods > 0) res.status = 'partial';
   else if (started.every((p) => p.state === 'not_arrived')) res.status = 'not_arrived';
   else if (res.lateMinutes > 0) res.status = 'late';
+  if (out.some((p) => p.review === 'pending')) res.status = 'review';
 
   // Lateness has a flat fine (a riyal per few minutes); other missing time is priced from the salary.
   const perMinute = salary > 0 && scheduledMinutes > 0 ? salary / 30 / scheduledMinutes : 0;
@@ -182,6 +209,12 @@ export function loadAttendance(db, { from, to, userId = null, now = Date.now() }
   const today = localDate(now);
   const punches = db.prepare(`SELECT user_id, date, ts, type, note FROM punches WHERE voided = 0 AND date BETWEEN ? AND ?`).all(from, to);
   const excuses = db.prepare('SELECT user_id, date, kind FROM excuses WHERE date BETWEEN ? AND ?').all(from, to);
+  const exceptions = loadExceptions(db, from, to);
+  const reviewsOf = new Map();
+  for (const c of db.prepare("SELECT user_id, date, ref, status FROM review_cases WHERE kind = 'missing_out' AND status IN ('pending', 'approved') AND date BETWEEN ? AND ?").all(from, to)) {
+    const k = `${c.user_id}|${c.date}`;
+    reviewsOf.set(k, { ...reviewsOf.get(k), [c.ref]: c.status });
+  }
   const byKey = new Map();
   for (const p of punches) {
     const k = `${p.user_id}|${p.date}`;
@@ -206,7 +239,7 @@ export function loadAttendance(db, { from, to, userId = null, now = Date.now() }
       const day = computeDay({
         date,
         punches: byKey.get(`${u.id}|${date}`) || [],
-        periods: date < since ? [] : periodsFor(u, date, settings.schedule, holidays.has(date)),
+        periods: date < since ? [] : periodsFor(u, date, settings.schedule, holidays.has(date), exceptionOf(exceptions, u.id, date)),
         excuse: excuseOf.get(`${u.id}|${date}`) || null,
         grace: settings.grace_minutes,
         maxExit: settings.max_exit_minutes,
@@ -214,6 +247,7 @@ export function loadAttendance(db, { from, to, userId = null, now = Date.now() }
         lateRate: settings.late_minutes_per_riyal ?? 3,
         now,
         permits: permitsOf.get(`${u.id}|${date}`) || [],
+        reviews: reviewsOf.get(`${u.id}|${date}`) || {},
       });
       if (holidays.has(date)) day.status = day.presentMinutes ? 'off_worked' : 'holiday';
       rows.push({ userId: u.id, name: u.name, ...day });
@@ -226,13 +260,14 @@ export function loadAttendance(db, { from, to, userId = null, now = Date.now() }
 export function summarize(rows) {
   const map = new Map();
   for (const r of rows) {
-    if (!map.has(r.userId)) map.set(r.userId, { userId: r.userId, name: r.name, workDays: 0, presentDays: 0, absentDays: 0, partialDays: 0, lateDays: 0, excusedDays: 0, lateMinutes: 0, earlyMinutes: 0, exitMinutes: 0, overtimeMinutes: 0, presentMinutes: 0, suggested: 0, flags: 0 });
+    if (!map.has(r.userId)) map.set(r.userId, { userId: r.userId, name: r.name, workDays: 0, presentDays: 0, absentDays: 0, partialDays: 0, lateDays: 0, excusedDays: 0, reviewDays: 0, lateMinutes: 0, earlyMinutes: 0, exitMinutes: 0, overtimeMinutes: 0, presentMinutes: 0, suggested: 0, flags: 0 });
     const s = map.get(r.userId);
     if (r.scheduledMinutes > 0 && r.status !== 'upcoming') s.workDays++;
     if (['present', 'late', 'partial', 'off_worked'].includes(r.status)) s.presentDays++;
     if (r.status === 'absent') s.absentDays++;
     if (r.status === 'partial') s.partialDays++;
     if (r.status === 'excused') s.excusedDays++;
+    if (r.status === 'review') s.reviewDays++;
     if (r.lateMinutes > 0) s.lateDays++;
     s.lateMinutes += r.lateMinutes;
     s.earlyMinutes += r.earlyMinutes;

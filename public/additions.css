@@ -35,6 +35,12 @@ details summary { cursor: pointer; color: var(--muted); }
 .ad-money .net { background: var(--good-bg); }
 .ad-money .net b { color: var(--good); }
 
+/* cases & shift exceptions */
+.ad-amt { display: inline-flex; align-items: center; gap: 6px; font-size: .85rem; color: var(--muted); }
+.ad-amt input { width: 90px; }
+.ad-per { align-items: end; }
+.ad-per [data-rm] { margin-bottom: 10px; }
+
 /* ------------------------------------------------------------------ floating chat */
 .cw { position: fixed; z-index: 30; left: 18px; bottom: 18px; } /* away from the side menu on the right */
 .cw-btn { width: 56px; height: 56px; border-radius: 50%; border: 0; cursor: pointer; display: grid; place-items: center; color: var(--btn-ink); background: var(--foil); box-shadow: 0 14px 34px -12px rgb(91 63 209 / 55%); position: relative; transition: transform .2s ease; }

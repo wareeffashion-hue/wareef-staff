@@ -28,7 +28,7 @@ const fmtDate = (d) => `${dayName(d)} ${d.slice(8)}/${d.slice(5, 7)}`;
 const STATUS = {
   present: ['حاضر', 'good'], late: ['متأخر', 'warn'], absent: ['غائب', 'bad'], partial: ['غياب جزئي', 'bad'],
   excused: ['معذور', 'info'], off: ['إجازة أسبوعية', ''], off_worked: ['عمل في يوم إجازة', 'info'], holiday: ['إجازة رسمية', ''],
-  upcoming: ['لم يبدأ الدوام', ''], not_arrived: ['لم يصل بعد', 'warn'],
+  upcoming: ['لم يبدأ الدوام', ''], not_arrived: ['لم يصل بعد', 'warn'], review: ['غياب بانتظار المراجعة', 'warn'],
 };
 const LIVE = { in: ['داخل الدوام', 'good'], leave: ['خروج مؤقت', 'warn'], out: ['خارج الدوام', ''], none: ['لم يسجّل', ''] };
 const PUNCH = { in: 'حضور', out: 'انصراف', leave: 'خروج مؤقت', back: 'عودة' };
@@ -659,7 +659,7 @@ PAGES.mine = async () => {
       <div class="kpi ${s.absentDays ? 'bad' : ''}"><b>${int(s.absentDays)}</b><span>أيام الغياب</span></div>
       <div class="kpi ${s.lateMinutes ? 'warn' : ''}"><b>${int(s.lateMinutes)}</b><span>دقائق التأخير</span></div>
       <div class="kpi"><b>${int(s.exitMinutes)}</b><span>دقائق الخروج</span></div>
-      <div class="kpi ${dedTotal ? 'bad' : ''}"><b>${money(dedTotal)}</b><span>الخصومات (ر.س)</span></div>
+      ${d.hidden ? '' : `<div class="kpi ${dedTotal ? 'bad' : ''}"><b>${money(dedTotal)}</b><span>الخصومات (ر.س)</span></div>`}
       <div class="kpi"><b>${money(d.balance)}</b><span>المتبقي من السلف</span></div>
     </div>
     <section class="panel"><header><h2>الأيام</h2></header>
@@ -667,9 +667,9 @@ PAGES.mine = async () => {
         d.days.slice().reverse().map((r) => `<tr><td>${fmtDate(r.date)}</td><td>${statusPill(r.status)}</td><td>${fmtT(r.firstIn)}</td><td>${fmtT(r.lastOut)}</td><td>${mn(r.lateMinutes)}</td><td>${mn(r.earlyMinutes)}</td><td>${mn(r.exitMinutes)}</td><td>${hm(r.presentMinutes)}</td><td>${flagList(r.flags)}</td></tr>`))}
     </section>
     <div class="grid2">
-      <section class="panel"><header><h2>الخصومات</h2></header>
+      ${d.hidden ? '' : `<section class="panel"><header><h2>الخصومات</h2></header>
         ${table(['التاريخ', 'السبب', 'المبلغ', 'التفاصيل'], d.deductions.map((x) => `<tr><td>${x.date}</td><td>${DED[x.category]}</td><td>${money(x.amount)}</td><td class="wrap">${esc(x.reason)}</td></tr>`), { empty: 'لا توجد خصومات هذا الشهر' })}
-      </section>
+      </section>`}
       <section class="panel"><header><h2>السلف</h2><span class="muted">المتبقي: <b>${money(d.balance)}</b> ر.س</span></header>
         ${table(['التاريخ', 'النوع', 'المبلغ', 'ملاحظة'], d.debts.map((x) => `<tr><td>${x.date}</td><td>${x.kind === 'loan' ? pill('سلفة', 'warn') : pill('سداد', 'good')}</td><td>${money(x.amount)}</td><td class="wrap">${esc(x.note)}</td></tr>`), { empty: 'لا توجد سلف' })}
       </section>

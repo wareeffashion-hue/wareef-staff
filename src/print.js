@@ -97,7 +97,8 @@ const page = (title, body) => `<!doctype html><html lang="ar" dir="rtl"><head><m
 <footer>وريف · فريق العمل · صدر ${esc(issued())}</footer>
 <script src="/print.js"></script></body></html>`;
 
-export function renderPayslip({ month, row: r, closed, deductions, debts }) {
+/** `hide`: the employee's copy when the owner hides deduction amounts: the net without the deductions. */
+export function renderPayslip({ month, row: r, closed, deductions, debts, hide = false }) {
   return page(`قسيمة راتب ${r.name} ${month}`, `
 <header class="head">
   <img src="/img/logo-mark.png" alt="وريف" class="logo">
@@ -113,13 +114,13 @@ export function renderPayslip({ month, row: r, closed, deductions, debts }) {
 <h2>الراتب</h2>
 <div class="slip"><table><tbody>
   <tr><td>الراتب الأساسي</td><td>${sar(r.salary)}</td></tr>
-  <tr><td>الخصومات المعتمدة</td><td>− ${sar(r.deductions)}</td></tr>
+  ${hide ? '' : `<tr><td>الخصومات المعتمدة</td><td>− ${sar(r.deductions)}</td></tr>`}
   <tr><td>أقساط السلف</td><td>− ${sar(r.repayments)}</td></tr>
   <tr class="total"><td>صافي الراتب</td><td>${sar(r.net)}</td></tr>
 </tbody></table></div>
 <p class="note">المتبقي من السلف بعد هذا الشهر: <b>${sar(r.debtBalance)}</b></p>
-<h2>تفاصيل الخصومات</h2>
-${table(['التاريخ', 'البند', 'المبلغ', 'التفاصيل'], deductions.map((x) => [x.date, DEDUCTION_LABELS[x.category] || '', n(x.amount), esc(x.reason)]), 'لا توجد خصومات')}
+${hide ? '' : `<h2>تفاصيل الخصومات</h2>
+${table(['التاريخ', 'البند', 'المبلغ', 'التفاصيل'], deductions.map((x) => [x.date, DEDUCTION_LABELS[x.category] || '', n(x.amount), esc(x.reason)]), 'لا توجد خصومات')}`}
 <h2>السلف والسداد</h2>
 ${table(['التاريخ', 'النوع', 'المبلغ', 'ملاحظة'], debts.map((x) => [x.date, x.kind === 'loan' ? 'سلفة' : 'سداد', n(x.amount), esc(x.note)]), 'لا توجد حركات')}
 <div class="sign"><div>توقيع الموظف</div><div>اعتماد المدير</div></div>`);

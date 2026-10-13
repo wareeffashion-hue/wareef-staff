@@ -17,6 +17,7 @@ export const DEFAULTS = {
   grace_minutes: 10,
   late_minutes_per_riyal: 3, // lateness fine: one riyal per this many minutes; 0 = by salary like other missing time
   max_exit_minutes: 30,
+  hide_deductions: false,    // employees see their net salary only, without the deduction amounts
   security: {
     allowed_ips: [],      // empty = any network
     geo: null,            // { lat, lng, radius } in metres
@@ -101,6 +102,7 @@ export function saveSettings(db, patch) {
   if ('grace_minutes' in patch) next.grace_minutes = clampInt(patch.grace_minutes, 0, 120);
   if ('late_minutes_per_riyal' in patch) next.late_minutes_per_riyal = clampInt(patch.late_minutes_per_riyal, 0, 600);
   if ('max_exit_minutes' in patch) next.max_exit_minutes = clampInt(patch.max_exit_minutes, 1, 600);
+  if ('hide_deductions' in patch) next.hide_deductions = !!patch.hide_deductions;
   if ('security' in patch) {
     const s = patch.security || {};
     const geo = s.geo && Number.isFinite(+s.geo.lat) && Number.isFinite(+s.geo.lng)
@@ -183,6 +185,7 @@ export function permissionList(settings) {
     { key: 'scan', name: 'مسح الباركود: الشحنات الطالعة ومرتجعات العملاء (تُحسب تلقائياً)' },
     { key: 'supervisor', name: 'مشرف: يتابع الحضور والعمليات والطلبات والتذاكر، بدون الرواتب والخصومات والإعدادات' },
     { key: 'accountant', name: 'الحسابات والمالية: الرواتب والقسائم والخصومات والسلف، وتسجيل السلف والسداد' },
+    { key: 'payroll_reopen', name: 'فتح مسيّر شهر مقفل وإعادة إقفاله (للحسابات، والسبب إجباري)' },
     { key: 'deduct_record', name: 'تسجيل خصومات وملاحظات على الموظفين (الخصم لا يُعتمد إلا بموافقة المشرف)' },
     { key: 'shortages', name: 'إدارة المنتجات غير المتوفرة: إضافتها وتحديث حالة توفيرها' },
     { key: 'shortages_notify', name: 'استقبال تذكير المنتجات غير المتوفرة على واتساب' },

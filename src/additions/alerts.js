@@ -2,6 +2,7 @@
 // whatever the "employee account" switch says, the same way exchange alerts do.
 import { appLink, notifyManager, queue } from '../notify.js';
 import * as msg from '../messages.js';
+import { getSettings } from '../settings.js';
 
 const phoneOf = (db, userId) => db.prepare('SELECT phone FROM users WHERE id = ? AND active = 1').get(userId)?.phone || '';
 
@@ -29,5 +30,12 @@ export const link = (db, hash = '') => {
   const base = appLink(db).replace(/\/$/, '');
   return base ? `${base}/${hash}` : undefined;
 };
+
+/** The employee's deduction notice; without the amount when the owner hides deductions from employees. */
+export function deductionNotice(db, { amount, date, category, reason, link }) {
+  if (!getSettings(db).hide_deductions) return msg.deduction({ amount, date, category, reason, link });
+  return msg.card({ icon: '📄', title: 'إشعار خصم', lines: ['تم تسجيل خصم على حسابك.'], fields: [['التاريخ', date], ...(category ? [['البند', category]] : [])],
+    quote: reason || undefined, steps: ['صافي راتبك في «سجلي»', 'لأي استفسار تواصل مع المدير'], link });
+}
 
 export { msg };

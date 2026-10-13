@@ -16,10 +16,13 @@ import { decideCorrection, listCorrections, profile, requestCorrection } from '.
 import {
   addDebt, addNote, decideDeduction, delegates, financeOverview, listDeductionRequests, listNotes, recordDeduction, setDelegate,
 } from './finance.js';
+import {
+  additionSettings, decideCase, deleteException, listCases, listExceptions, reviewTick, saveAdditionSettings, saveException,
+} from './cases.js';
 import { PAGE_HEADERS, isFinance, people, requireFinance, requireSup } from './util.js';
 
 /** Jobs run once a minute by the notifier. */
-export const additionJobs = [decisionFilesTick, shortageDailyTick, chatRetentionTick];
+export const additionJobs = [decisionFilesTick, shortageDailyTick, chatRetentionTick, reviewTick];
 
 export function registerAdditions(r, db) {
   const body = async (req) => parseJson(await readBody(req));
@@ -124,5 +127,14 @@ export function registerAdditions(r, db) {
   r.put('/api/deduction-requests/:id', async ({ req, params, user }) => decideDeduction(db, user, params.id, await body(req)), auth);
   r.get('/api/notes', ({ url, user }) => listNotes(db, user, { userId: url.searchParams.get('user_id') }), auth);
   r.post('/api/notes', async ({ req, user }) => addNote(db, user, await body(req)), auth);
+
+  // ---------------------------------------------------------- review cases, shift exceptions, settings
+  r.get('/api/cases', ({ url, user }) => listCases(db, user, { status: url.searchParams.get('status') || 'pending', userId: url.searchParams.get('user_id') }), auth);
+  r.put('/api/cases/:id', async ({ req, params, user }) => decideCase(db, user, params.id, await body(req)), auth);
+  r.get('/api/shift-exceptions', ({ url, user }) => listExceptions(db, user, { from: url.searchParams.get('from') }), auth);
+  r.post('/api/shift-exceptions', async ({ req, user }) => saveException(db, user, await body(req)), auth);
+  r.delete('/api/shift-exceptions/:id', async ({ req, params, user }) => deleteException(db, user, params.id, await body(req)), auth);
+  r.get('/api/addition-settings', ({ user }) => additionSettings(db, user), auth);
+  r.put('/api/addition-settings', async ({ req, user }) => saveAdditionSettings(db, user, await body(req)), auth);
   r.get('/api/staff-names', ({ user }) => ({ people: people(db).filter((p) => p.role === 'employee' && p.id !== user.id) }), auth);
 }

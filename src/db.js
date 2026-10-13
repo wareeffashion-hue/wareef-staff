@@ -495,6 +495,43 @@ const MIGRATIONS = [
   -- Basem raises shortages, so he manages the new shortages list
   UPDATE users SET perms = json_insert(perms, '$[#]', 'shortages') WHERE username = 'basem' AND perms NOT LIKE '%"shortages"%';
   `,
+  // v10 — additions phase 2: cases a supervisor reviews (missing checkout, exit without permission)
+  // and one-off changes to the working hours.
+  `
+  CREATE TABLE review_cases (
+    id INTEGER PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    date TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('missing_out', 'unauthorized_exit')),
+    ref TEXT NOT NULL,                 -- period id, or the exit punch time
+    period_name TEXT NOT NULL DEFAULT '',
+    started_at INTEGER,                -- exit start / period end
+    ended_at INTEGER,
+    minutes INTEGER NOT NULL DEFAULT 0,
+    amount REAL NOT NULL DEFAULT 0,    -- proposed deduction
+    note TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'dismissed')),
+    created_at INTEGER NOT NULL,
+    decided_by INTEGER REFERENCES users(id),
+    decided_at INTEGER,
+    response TEXT NOT NULL DEFAULT '',
+    deduction_id INTEGER,
+    UNIQUE (user_id, date, kind, ref)
+  );
+  CREATE INDEX review_cases_status ON review_cases(status, date);
+  CREATE INDEX review_cases_user ON review_cases(user_id, date);
+
+  CREATE TABLE shift_exceptions (
+    id INTEGER PRIMARY KEY,
+    date TEXT NOT NULL,
+    user_id INTEGER REFERENCES users(id),  -- NULL = everyone
+    periods TEXT NOT NULL DEFAULT '[]',    -- [] = no work that day
+    note TEXT NOT NULL DEFAULT '',
+    created_by INTEGER REFERENCES users(id),
+    created_at INTEGER NOT NULL
+  );
+  CREATE UNIQUE INDEX shift_exceptions_day ON shift_exceptions(date, COALESCE(user_id, 0));
+  `,
 ];
 
 export function openDb(path) {

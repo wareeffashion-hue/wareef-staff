@@ -4,13 +4,14 @@ import { audit } from '../db.js';
 import { HttpError } from '../http.js';
 import { getSettings } from '../settings.js';
 import { addDays, localDate, monthBounds, weekday } from '../time.js';
-import { loadAttendance, periodsFor, summarize } from '../attendance.js';
+import { exceptionOf, loadAttendance, loadExceptions, periodsFor, summarize } from '../attendance.js';
 import { managerPunch } from '../punch.js';
 import { payrollFor } from '../monthly.js';
 import { debtBalances, deductionRows } from '../reports.js';
 import { link, msg, toSupervisors, toUser } from './alerts.js';
 import { logChange } from './changelog.js';
 import { myDecisions } from './decisions.js';
+import { closeCasesByCorrection } from './cases.js';
 import { isFinance, isSup, needDate, text } from './util.js';
 
 const DAYS = ['الأحد', 'الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
@@ -28,17 +29,20 @@ export function profile(db, user, { userId = null, month = null } = {}) {
   const days = loadAttendance(db, { from, to: to < today ? to : today, userId: id });
   const money = id === user.id || isFinance(user);
   // the week's shifts (starting from Saturday)
+  const exceptions = loadExceptions(db, today, addDays(today, 6));
   const week = [6, 0, 1, 2, 3, 4, 5].map((wd) => {
     const date = [...Array(7)].map((_, i) => addDays(today, i)).find((d) => weekday(d) === wd);
-    return { day: DAYS[wd], periods: periodsFor(u, date, settings.schedule).map((p) => ({ name: p.name, start: p.start, end: p.end })) };
+    const exc = exceptionOf(exceptions, u.id, date);
+    return { day: DAYS[wd], date, changed: !!exc, periods: periodsFor(u, date, settings.schedule, false, exc).map((p) => ({ name: p.name, start: p.start, end: p.end })) };
   });
   let salary = null;
   if (money) {
     const { rows, closed } = payrollFor(db, m);
     const row = rows.find((r) => r.userId === id);
+    const hidden = !!settings.hide_deductions && !isFinance(user) && user.role !== 'admin';
     salary = {
-      month: m, closed: !!closed, base: u.salary, deductions: row?.deductions || 0, repayments: row?.repayments || 0, net: row?.net ?? u.salary,
-      list: deductionRows(db, from, to, id), loanBalance: debtBalances(db).find((b) => b.user_id === id)?.balance || 0,
+      month: m, closed: !!closed, base: u.salary, deductions: hidden ? null : row?.deductions || 0, repayments: row?.repayments || 0, net: row?.net ?? u.salary,
+      list: hidden ? [] : deductionRows(db, from, to, id), loanBalance: debtBalances(db).find((b) => b.user_id === id)?.balance || 0, hidden,
     };
   }
   const recent = (sql) => db.prepare(sql).all(id);
@@ -50,6 +54,7 @@ export function profile(db, user, { userId = null, month = null } = {}) {
     tasks: {
       shortages: recent("SELECT id, sku, name, qty, qty_done, priority, due_date, status FROM shortages WHERE assignee_id = ? AND status IN ('open', 'partial') ORDER BY id DESC"),
       tickets: recent("SELECT id, title, status, date FROM tickets WHERE user_id = ? AND status != 'closed' ORDER BY id DESC LIMIT 20"),
+      cases: recent("SELECT id, date, kind, period_name, minutes, started_at, ended_at FROM review_cases WHERE user_id = ? AND status = 'pending' ORDER BY date DESC"),
       decisions: id === user.id ? myDecisions(db, user).filter((d) => !d.ack_at) : [],
     },
     leaves: recent(`SELECT date, kind, note FROM excuses WHERE user_id = ? AND kind IN ('leave', 'sick', 'excused') AND date >= '${today.slice(0, 4)}-01-01' ORDER BY date DESC`),
@@ -106,6 +111,7 @@ export function decideCorrection(db, user, id, body) {
   let punchId = null;
   if (status === 'approved') {
     punchId = managerPunch(db, user, { user_id: c.user_id, date: c.date, time: c.time, type: c.type, note: `تصحيح معتمد: ${c.reason}` });
+    if (c.type === 'out') closeCasesByCorrection(db, c.user_id, c.date, user);
     logChange(db, { actor: user, area: 'attendance', action: 'اعتماد طلب تصحيح بصمة', target: c.user_id, ref: c.date, before: 'بدون بصمة', after: `${TYPES[c.type]} ${c.time}`, reason: c.reason });
   }
   db.prepare('UPDATE corrections SET status = ?, decided_by = ?, decided_at = ?, response = ?, punch_id = ? WHERE id = ?').run(status, user.id, Date.now(), response, punchId, c.id);

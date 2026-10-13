@@ -20,6 +20,8 @@ const NEW_ICONS = {
   idcard: '<rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="9" cy="11" r="2.2"/><path d="M5.5 16a3.5 3.5 0 0 1 7 0M14 10h4M14 13h4"/>',
   calc: '<rect x="5" y="3" width="14" height="18" rx="2"/><path d="M8 7h8M8 11h.01M12 11h.01M16 11h.01M8 15h.01M12 15h.01M16 15v3M8 18h4"/>',
   note: '<path d="M5 4h10l4 4v12H5z"/><path d="M15 4v4h4M8 12h8M8 16h5"/>',
+  alert: '<path d="M12 3l9.5 17h-19z"/><path d="M12 10v4M12 17v.01"/>',
+  shift: '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4M9 15l2 2 4-4"/>',
 };
 
 const CORR = { in: 'حضور', out: 'انصراف', leave: 'خروج مؤقت', back: 'عودة' };
@@ -54,10 +56,10 @@ export function addNav(items) {
   const emp = me().role === 'employee';
   if (emp) add.push(['profile', 'صفحتي', 'idcard']);
   else add.push(['profile', 'صفحات الموظفين', 'idcard']);
-  if (isSup()) add.push(['approvals', 'طلبات الاعتماد', 'check']);
+  if (isSup()) add.push(['cases', 'الحالات', 'alert'], ['approvals', 'طلبات الاعتماد', 'check']);
   else if (canRecord()) add.push(['record', 'خصم أو ملاحظة', 'note']);
   if (canShortages()) add.push(['shortages', 'المنتجات غير المتوفرة', 'pkg']);
-  if (isSup()) add.push(['decisions', 'القرارات', 'stamp'], ['broadcast', 'رسالة واتساب', 'mega']);
+  if (isSup()) add.push(['shifts', 'استثناءات الدوام', 'shift'], ['decisions', 'القرارات', 'stamp'], ['broadcast', 'رسالة واتساب', 'mega']);
   if (isFinance() && me().role !== 'admin') add.push(['finance', 'الحسابات', 'calc']);
   if (isSup() || isFinance()) add.push(['changes', 'سجل التعديلات', 'history']);
   const keys = new Set(items.map(([k]) => k));
@@ -69,7 +71,10 @@ export function addNav(items) {
 export function mountAdditions(ctx) {
   C = ctx;
   Object.assign(C.ICONS, NEW_ICONS);
-  Object.assign(C.PAGES, { changes, broadcast, decisions, shortages, profile, approvals, record, finance });
+  Object.assign(C.PAGES, { changes, broadcast, decisions, shortages, profile, approvals, record, finance, cases, shifts });
+  // the owner's settings page gets one more panel: show or hide deduction amounts from employees
+  const settingsPage = C.PAGES.settings;
+  if (settingsPage) C.PAGES.settings = async () => { await settingsPage(); await settingsPanel(); };
 }
 
 // ------------------------------------------------------------------ people picker
@@ -350,10 +355,11 @@ async function profile() {
     </div>
     <div class="grid2">
       <section class="panel"><header><h2>الدوام هذا الأسبوع</h2><span class="muted small">السماح ${C.int(d.shift.grace)} دقيقة</span></header>
-        ${C.table(['اليوم', 'الفترات'], d.shift.week.map((w) => `<tr><td>${w.day}</td><td>${w.periods.length ? w.periods.map((p) => `<span class="pill" dir="ltr">${p.start}–${p.end}</span>`).join(' ') : '<span class="muted">إجازة</span>'}</td></tr>`))}
+        ${C.table(['اليوم', 'الفترات'], d.shift.week.map((w) => `<tr><td>${w.day}${w.changed ? ` ${C.pill('دوام معدّل', 'info')}` : ''}</td><td>${w.periods.length ? w.periods.map((p) => `<span class="pill" dir="ltr">${p.start}–${p.end}</span>`).join(' ') : '<span class="muted">إجازة</span>'}</td></tr>`))}
       </section>
       <section class="panel"><header><h2>المهام</h2></header>
-        ${d.tasks.decisions.length || d.tasks.shortages.length || d.tasks.tickets.length ? `<div class="list">
+        ${d.tasks.decisions.length || d.tasks.shortages.length || d.tasks.tickets.length || d.tasks.cases.length ? `<div class="list">
+          ${d.tasks.cases.map((x) => `<div class="item"><div class="top"><b>${x.kind === 'missing_out' ? `🕘 لم تسجّل انصراف ${C.esc(x.period_name)}` : `🚪 خروج بدون إذن ${x.minutes} دقيقة`}</b>${C.pill('بانتظار المراجعة', 'warn')}</div><div class="small">${C.fmtDate(x.date)} · إذا نسيت البصمة قدّم طلب تصحيح تحت</div></div>`).join('')}
           ${d.tasks.decisions.map((x) => `<div class="item"><div class="top"><b>📜 ${C.esc(x.title)}</b>${C.pill('بانتظار إقرارك', 'warn')}</div><div class="acts"><a class="link" href="/ack/${encodeURIComponent(x.token)}" target="_blank" rel="noopener">قراءة القرار</a><button class="link" data-ack="${x.id}"><b>أقرّ بالاطلاع</b></button></div></div>`).join('')}
           ${d.tasks.shortages.map((x) => `<div class="item"><div class="top"><b>📦 توفير <span dir="ltr">${C.esc(x.sku)}</span></b>${P(PRIORITY, x.priority)}</div><div class="small">${C.esc(x.name || '')} · ${C.int(x.qty_done)} من ${C.int(x.qty)}${x.due_date ? ` · المتوقع ${C.fmtDate(x.due_date)}` : ''}</div></div>`).join('')}
           ${d.tasks.tickets.map((x) => `<div class="item"><div class="top"><b>🎫 ${C.esc(x.title)}</b>${P(TICKET, x.status)}</div></div>`).join('')}
@@ -361,7 +367,7 @@ async function profile() {
       </section>
     </div>
     ${d.salary ? `<section class="panel"><header><h2>الراتب · ${C.esc(d.salary.month)}</h2>${d.salary.closed ? C.pill('مقفل', 'good') : C.pill('مفتوح، الأرقام تتحدث', 'warn')}</header>
-      <div class="ad-money"><div><span>الراتب الأساسي</span><b>${C.money(d.salary.base)}</b></div><div><span>الخصومات</span><b class="bad">− ${C.money(d.salary.deductions)}</b></div>
+      <div class="ad-money"><div><span>الراتب الأساسي</span><b>${C.money(d.salary.base)}</b></div>${d.salary.hidden ? '' : `<div><span>الخصومات</span><b class="bad">− ${C.money(d.salary.deductions)}</b></div>`}
         <div><span>أقساط السلف</span><b class="bad">− ${C.money(d.salary.repayments)}</b></div><div class="net"><span>الصافي</span><b>${C.money(d.salary.net)}</b></div><div><span>متبقي السلف</span><b>${C.money(d.salary.loanBalance)}</b></div></div>
       ${d.salary.list.length ? C.table(['التاريخ', 'الخصم', 'المبلغ', 'التفاصيل'], d.salary.list.map((x) => `<tr><td>${x.date}</td><td>${C.esc(C.DED[x.category] || x.category)}</td><td>${C.money(x.amount)}</td><td class="wrap">${C.esc(x.reason)}</td></tr>`)) : ''}
     </section>` : ''}
@@ -475,7 +481,8 @@ async function finance() {
   const DEBT = { loan: ['سلفة', 'warn'], repayment: ['سداد', 'good'] };
   const pg = C.render(`
     <div class="topline"><h1>الحسابات</h1><div class="tools"><input type="month" id="fn-month" value="${d.month}" aria-label="الشهر"></div></div>
-    <section class="panel closebar ${d.closed ? 'done' : ''}"><p>${d.closed ? `${C.pill('مقفل', 'good')} الشهر مقفل والأرقام مجمّدة.` : `${C.pill('مفتوح', 'warn')} الأرقام تتحدث مع كل بصمة وخصم.`}</p></section>
+    <section class="panel closebar ${d.closed ? 'done' : ''}"><p>${d.closed ? `${C.pill('مقفل', 'good')} الشهر مقفل والأرقام مجمّدة.` : `${C.pill('مفتوح', 'warn')} الأرقام تتحدث مع كل بصمة وخصم.`}
+      ${d.canLock ? (d.closed ? '<button class="btn sm ghost" id="fn-open" type="button">فتح الشهر للتعديل</button>' : '<button class="btn sm" id="fn-close" type="button">إقفال الشهر</button>') : ''}</p></section>
     <section class="panel"><header><h2>مسيّر الرواتب</h2></header>
       ${C.table(['الموظف', 'الراتب', 'حضور', 'غياب', 'الخصومات', 'أقساط السلف', 'الصافي', 'متبقي السلف', ''], d.payroll.map((r) => `<tr><td><b>${C.esc(r.name)}</b></td><td>${C.money(r.salary)}</td><td>${r.presentDays}/${r.workDays}</td><td>${r.absentDays}</td>
         <td>${C.money(r.deductions)}</td><td>${C.money(r.repayments)}</td><td><b>${C.money(r.net)}</b></td><td>${C.money(r.debtBalance)}</td><td><a class="link" href="/finance/payslip?month=${d.month}&user_id=${r.userId}" target="_blank" rel="noopener">القسيمة</a></td></tr>`),
@@ -500,8 +507,107 @@ async function finance() {
       ${C.table(['التاريخ', 'الموظف', 'النوع', 'المبلغ', 'ملاحظة'], d.debts.map((x) => `<tr><td>${x.date}</td><td>${C.esc(x.user_name)}</td><td>${P(DEBT, x.kind)}</td><td>${C.money(x.amount)}</td><td class="wrap">${C.esc(x.note)}</td></tr>`), { empty: 'لا توجد حركات' })}
     </section>`);
   C.$('#fn-month', pg).onchange = (e) => { sessionStorage.setItem('fn-month', e.target.value || C.today().slice(0, 7)); C.refresh(); };
+  const reopen = C.$('#fn-open', pg);
+  if (reopen) reopen.onclick = async () => { const reason = askReason('سبب فتح الشهر المقفل'); if (reason && await C.act(reopen, () => C.api(`/api/payroll/close/${d.month}`, { method: 'DELETE', body: { reason } }), 'فُتح الشهر')) C.refresh(); };
+  const lock = C.$('#fn-close', pg);
+  if (lock) lock.onclick = async () => { if (confirm(`إقفال مسيّر ${d.month}؟ تتجمّد الأرقام وتوصل القسائم للموظفين.`) && await C.act(lock, () => C.api('/api/payroll/close', { method: 'POST', body: { month: d.month } }), 'أُقفل الشهر')) C.refresh(); };
   C.$('#fn-kind', pg).onchange = (e) => { C.$('#fn-sal-l', pg).hidden = e.target.value !== 'repayment'; };
   C.$('#fnL', pg).onsubmit = async (e) => { e.preventDefault(); if (await C.act(C.$('button[type=submit]', e.target), () => C.api('/api/finance/debts', { method: 'POST', body: C.formData(e.target) }), 'تم الحفظ ووصل الموظف إشعار')) C.refresh(); };
+}
+
+// ------------------------------------------------------------------ review cases
+async function cases() {
+  const status = sessionStorage.getItem('cs-status') || 'pending';
+  const d = await C.api(`/api/cases?status=${status}`);
+  const range = (c) => (c.kind === 'unauthorized_exit' ? `${C.fmtT(c.started_at)} ← ${C.fmtT(c.ended_at)} · ${c.minutes} دقيقة` : `${C.esc(c.period_name)} · انتهت ${C.fmtT(c.started_at)}${c.note ? ` · ${C.esc(c.note)}` : ''}`);
+  const CS = { pending: ['بانتظار المراجعة', 'warn'], approved: ['معتمدة', 'bad'], dismissed: ['ملغاة', 'good'] };
+  const pg = C.render(`
+    <div class="topline"><h1>الحالات</h1><div class="tools">
+      <div class="seg" role="tablist">${[['pending', 'بانتظار المراجعة'], ['done', 'تمت مراجعتها']].map(([k, l]) => `<button type="button" data-st="${k}" class="${k === status ? 'on' : ''}">${l}</button>`).join('')}</div></div></div>
+    <div class="kpis"><div class="kpi ${d.counts.missing ? 'warn' : ''}"><b>${C.int(d.counts.missing)}</b><span>لم يسجّل انصراف</span></div>
+      <div class="kpi ${d.counts.exits ? 'warn' : ''}"><b>${C.int(d.counts.exits)}</b><span>خروج بدون إذن</span></div></div>
+    <section class="panel"><header><h2>${status === 'pending' ? 'بانتظار قرارك' : 'آخر الحالات'}</h2><span class="muted small">عدم تسجيل الانصراف: الاعتماد يحسب الفترة غياب. الخروج بدون إذن: الاعتماد يسجّل الخصم (ريال لكل ${d.lateRate} دقائق)</span></header>
+      ${d.cases.length ? `<div class="list">${d.cases.map((c) => `<div class="item"><div class="top"><b>${C.esc(c.name)} · ${C.esc(d.kinds[c.kind])}</b>${P(CS, c.status)}</div>
+        <div class="small">${C.fmtDate(c.date)} · ${range(c)}</div>
+        ${c.kind === 'unauthorized_exit' ? `<div class="small">الخصم ${c.status === 'pending' ? 'المقترح' : ''}: <b>${C.money(c.amount)} ر.س</b></div>` : ''}
+        ${c.status !== 'pending' ? `<div class="muted small">${C.esc(c.decided_name || '')} ${when(c.decided_at)}${c.response ? ` · ${C.esc(c.response)}` : ''}</div>` : ''}
+        ${c.status === 'pending' ? `<div class="acts">${c.user_id === me().id && me().role !== 'admin' ? '<span class="muted small">حالتك يراجعها المدير</span>'
+          : c.kind === 'unauthorized_exit' ? `<label class="ad-amt">الخصم<input type="number" min="0" step="0.5" value="${c.amount}" data-amt="${c.id}"></label><button class="btn sm" data-ok="${c.id}">اعتماد الخصم</button><button class="link" data-no="${c.id}">إلغاء (بعذر)</button>`
+          : `<button class="btn sm" data-ok="${c.id}">اعتماد الغياب</button><button class="link" data-no="${c.id}">إلغاء (كان حاضراً)</button>`}</div>` : ''}
+      </div>`).join('')}</div>` : `<p class="empty">${status === 'pending' ? 'ما في حالات بانتظار المراجعة 👌' : 'لا توجد حالات'}</p>`}
+    </section>`);
+  C.$$('[data-st]', pg).forEach((b) => { b.onclick = () => { sessionStorage.setItem('cs-status', b.dataset.st); C.refresh(); }; });
+  C.$$('[data-ok]', pg).forEach((b) => { b.onclick = async () => {
+    const amt = C.$(`[data-amt="${b.dataset.ok}"]`, pg);
+    if (await C.act(b, () => C.api(`/api/cases/${b.dataset.ok}`, { method: 'PUT', body: { status: 'approved', ...(amt ? { amount: amt.value } : {}) } }), 'تم الاعتماد')) C.refresh();
+  }; });
+  C.$$('[data-no]', pg).forEach((b) => { b.onclick = async () => {
+    const response = prompt('سبب الإلغاء');
+    if (response && await C.act(b, () => C.api(`/api/cases/${b.dataset.no}`, { method: 'PUT', body: { status: 'dismissed', response } }), 'أُلغيت الحالة')) C.refresh();
+  }; });
+}
+
+// ------------------------------------------------------------------ shift exceptions
+async function shifts() {
+  const d = await C.api('/api/shift-exceptions');
+  const regular = (date) => d.schedule.days[new Date(`${date}T00:00:00Z`).getUTCDay()] || [];
+  const row = (p = {}) => `<div class="row ad-per"><input type="hidden" name="pid" value="${C.esc(p.id || '')}"><label class="f">الفترة<input name="pname" value="${C.esc(p.name || '')}" placeholder="مثال: الصباحية"></label>
+    <label class="f">من<input type="time" name="pstart" value="${p.start || ''}" required></label><label class="f">إلى<input type="time" name="pend" value="${p.end || ''}" required></label><button type="button" class="link bad" data-rm>حذف</button></div>`;
+  const show = (list) => (list.length ? list.map((p) => `<span class="pill" dir="ltr">${p.start}–${p.end}</span>`).join(' ') : C.pill('بدون دوام', 'warn'));
+  const pg = C.render(`
+    <div class="topline"><h1>استثناءات الدوام</h1></div>
+    <div class="grid2">
+      <section class="panel"><header><h2>استثناء جديد</h2><span class="muted small">يتقدّم على الجدول المعتاد لهذا اليوم فقط</span></header>
+        <form class="form" id="shxF">
+          <div class="row"><label class="f">اليوم<input type="date" name="date" id="shx-date" value="${C.today()}" required></label>
+            <label class="f">لمن<select name="user_id" id="shx-user">${C.opt('', 'كل الموظفين')}${d.people.filter((p) => me().role === 'admin' || p.id !== me().id).map((p) => C.opt(p.id, p.name)).join('')}</select></label></div>
+          <label class="check"><input type="checkbox" name="off" id="shx-off">بدون دوام هذا اليوم</label>
+          <div id="shx-pers"></div>
+          <button type="button" class="btn ghost" id="shx-add">+ فترة</button>
+          <label class="f">السبب<input name="note" required maxlength="200" placeholder="مثال: جرد المستودع، دوام رمضان، يوم بديل"></label>
+          <button class="btn" type="submit">حفظ وإبلاغ الموظفين</button>
+        </form></section>
+      <section class="panel"><header><h2>الاستثناءات</h2></header>
+        ${d.exceptions.length ? `<div class="list">${d.exceptions.map((e) => `<div class="item"><div class="top"><b>${C.fmtDate(e.date)} · ${e.user_id ? C.esc(e.name) : 'كل الموظفين'}</b><span>${show(e.periods)}</span></div>
+          <div class="small">${C.esc(e.note)}</div><div class="muted small">${C.esc(e.created_name || '')} ${when(e.created_at)}</div>
+          ${e.date >= C.today() ? `<div class="acts"><button class="link bad" data-del="${e.id}">حذف</button></div>` : ''}</div>`).join('')}</div>` : '<p class="empty">ما في استثناءات. الدوام يمشي على الجدول المعتاد</p>'}
+      </section>
+    </div>`);
+  const f = C.$('#shxF', pg);
+  const box = C.$('#shx-pers', f);
+  const wire = () => C.$$('[data-rm]', box).forEach((b) => { b.onclick = () => b.closest('.ad-per').remove(); });
+  const fill = () => { box.innerHTML = (C.$('#shx-off', f).checked ? [] : regular(f.date.value)).map(row).join(''); wire(); };
+  fill();
+  f.date.onchange = fill;
+  C.$('#shx-off', f).onchange = () => { fill(); C.$('#shx-add', f).hidden = C.$('#shx-off', f).checked; };
+  C.$('#shx-add', f).onclick = () => { box.insertAdjacentHTML('beforeend', row()); wire(); };
+  f.onsubmit = async (e) => {
+    e.preventDefault();
+    const periods = C.$$('.ad-per', box).map((r) => ({ id: C.$('[name=pid]', r).value, name: C.$('[name=pname]', r).value, start: C.$('[name=pstart]', r).value, end: C.$('[name=pend]', r).value }));
+    const body = { date: f.date.value, user_id: f.user_id.value || null, off: C.$('#shx-off', f).checked, periods, note: f.note.value };
+    if (await C.act(C.$('button[type=submit]', f), () => C.api('/api/shift-exceptions', { method: 'POST', body }), 'حُفظ الاستثناء ووصل الموظفين')) C.refresh();
+  };
+  C.$$('[data-del]', pg).forEach((b) => { b.onclick = async () => { const reason = askReason('سبب حذف الاستثناء'); if (reason && await C.act(b, () => C.api(`/api/shift-exceptions/${b.dataset.del}`, { method: 'DELETE', body: { reason } }), 'حُذف')) C.refresh(); }; });
+}
+
+// ------------------------------------------------------------------ a panel on the owner's settings page
+async function settingsPanel() {
+  if (me()?.role !== 'admin' || C.$('#ad-set')) return;
+  const s = await C.api('/api/addition-settings').catch(() => null);
+  const main = document.getElementById('page');
+  if (!s || !main) return;
+  const panel = document.createElement('section');
+  panel.className = 'panel';
+  panel.id = 'ad-set';
+  panel.innerHTML = `<header><h2>الخصومات في حسابات الموظفين</h2></header>
+    <label class="check"><input type="checkbox" id="ad-hide" ${s.hide_deductions ? 'checked' : ''}>إخفاء مبالغ الخصومات عن الموظفين (يشوف الصافي فقط في «سجلي» والقسيمة والرسائل)</label>
+    <p class="muted small">المدير والحسابات يشوفون كل التفاصيل دائماً.</p>`;
+  (C.$('.topline', main)?.nextElementSibling ? main.insertBefore(panel, C.$('.topline', main).nextElementSibling) : main.append(panel));
+  const cb = C.$('#ad-hide', panel);
+  cb.onchange = async () => {
+    const r = await C.act(null, () => C.api('/api/addition-settings', { method: 'PUT', body: { hide_deductions: cb.checked } }), cb.checked ? 'أُخفيت الخصومات عن الموظفين' : 'الخصومات ظاهرة للموظفين');
+    if (!r) cb.checked = !cb.checked;
+  };
 }
 
 // ------------------------------------------------------------------ floating chat

@@ -13,7 +13,7 @@ import {
 } from './auth.js';
 import { getSettings, saveSettings, allPeriods, permissionList } from './settings.js';
 import { localDate, isDate, addDays, monthBounds, localTime, at } from './time.js';
-import { computeDay, loadAttendance, periodsFor, summarize } from './attendance.js';
+import { computeDay, exceptionOf, loadAttendance, loadExceptions, periodsFor, summarize } from './attendance.js';
 import { FLAG_LABELS, NEXT, lastPunch, managerPunch, recordPunch, voidPunch } from './punch.js';
 import {
   attendanceSection, dailyReport, scansSection, debtBalances, debtRows, debtsSection, deductionRows, deductionsSection,
@@ -31,6 +31,7 @@ import { SCAN_KINDS, SCAN_METRIC, addScan, removeScan, scanCounts, scanList } fr
 import { addExchange, exchangeTick, listExchanges, receiveManually, removeExchange, updateExchange } from './exchanges.js';
 import { registerAdditions, additionJobs } from './additions/index.js';
 import { logChange } from './additions/changelog.js';
+import { deductionNotice } from './additions/alerts.js';
 import { pushTo, removeSubscription, saveSubscription, vapidKeys } from './push.js';
 import { renderDailyReport, renderMonthlyReport, renderPayslip } from './print.js';
 import * as msg from './messages.js';
@@ -109,7 +110,7 @@ function myToday(db, user, now = Date.now()) {
   const permits = db.prepare("SELECT from_time, to_time FROM leave_requests WHERE user_id = ? AND from_date = ? AND kind = 'permission' AND status = 'approved'")
     .all(user.id, date).map((p) => [at(date, p.from_time), at(date, p.to_time)]);
   const day = computeDay({
-    date, punches, periods: periodsFor(user, date, settings.schedule, holiday), excuse, permits,
+    date, punches, periods: periodsFor(user, date, settings.schedule, holiday, exceptionOf(loadExceptions(db, date, date), user.id, date)), excuse, permits,
     grace: settings.grace_minutes, maxExit: settings.max_exit_minutes, salary: 0, now,
   });
   const last = lastPunch(db, user.id, date);
@@ -246,9 +247,10 @@ export function createApp(db) {
     const { from, to } = monthBounds(month);
     const days = loadAttendance(db, { from, to, userId: user.id });
     const balance = debtBalances(db).find((b) => b.user_id === user.id);
+    const hidden = !!getSettings(db).hide_deductions && user.role !== 'admin';
     return {
       month, days: days.map(({ suggested, ...d }) => d), summary: summarize(days).map(({ suggested, ...s }) => s)[0] || null,
-      deductions: deductionRows(db, from, to, user.id), debts: debtRows(db, user.id), balance: balance?.balance || 0,
+      deductions: hidden ? [] : deductionRows(db, from, to, user.id), hidden, debts: debtRows(db, user.id), balance: balance?.balance || 0,
       closed: !!closedMonth(db, month), award: awardOf(db, month),
     };
   }, { auth: true });
@@ -707,7 +709,7 @@ export function createApp(db) {
       .run(userId, date, amount, category, text(b.reason, 300), user.id, Date.now());
     audit(db, user.id, 'deduction.add', userId, { date, amount, category, reason: text(b.reason, 300) });
     logChange(db, { actor: user, area: 'salary', action: 'خصم', target: userId, ref: date, before: '—', after: `${amount} ر.س · ${DEDUCTION_LABELS[category]}`, reason: b.reason });
-    notifyEmployee(db, userId, 'deduction', msg.deduction({ amount, date, category: DEDUCTION_LABELS[category], reason: text(b.reason, 200), link: appLink(db) }));
+    notifyEmployee(db, userId, 'deduction', deductionNotice(db, { amount, date, category: DEDUCTION_LABELS[category], reason: text(b.reason, 200), link: appLink(db) }));
     return { id: Number(res.lastInsertRowid) };
   }, { auth: true });
   r.delete('/api/deductions/:id', async ({ req, params, user }) => {
@@ -758,8 +760,10 @@ export function createApp(db) {
     const month = needMonth(url.searchParams.get('month'));
     return { month, ...payrollFor(db, month) };
   }, { auth: true });
+  // the owner, or the accounts employee given the "reopen a closed month" permission
+  const requirePayrollLock = (user) => { if (user.role !== 'admin' && !(user.perms.includes('accountant') && user.perms.includes('payroll_reopen'))) requireAdmin(user); };
   r.post('/api/payroll/close', async ({ req, user }) => {
-    requireAdmin(user);
+    requirePayrollLock(user);
     const b = parseJson(await readBody(req));
     const out = closeMonth(db, user, needMonth(b.month), { send: b.send !== false });
     logChange(db, { actor: user, area: 'salary', action: 'إقفال مسير الرواتب', ref: needMonth(b.month), before: 'مفتوح', after: 'مقفل', reason: b.reason || 'إقفال الشهر' });
@@ -770,8 +774,9 @@ export function createApp(db) {
     return { ok: true, sent: sendPayslips(db, needMonth(parseJson(await readBody(req)).month), { again: true }) };
   }, { auth: true });
   r.delete('/api/payroll/close/:month', async ({ req, params, user }) => {
-    requireAdmin(user);
-    const why = parseJson(await readBody(req)).reason;
+    requirePayrollLock(user);
+    const why = text(parseJson(await readBody(req)).reason, 300);
+    if (user.role !== 'admin' && why.length < 3) throw new HttpError(400, 'اكتب سبب فتح الشهر');
     const out = reopenMonth(db, user, needMonth(params.month));
     logChange(db, { actor: user, area: 'salary', action: 'فتح مسير مقفل', ref: needMonth(params.month), before: 'مقفل', after: 'مفتوح', reason: why });
     return out;
@@ -1018,7 +1023,8 @@ export function createApp(db) {
     const row = rows.find((x) => x.userId === userId);
     if (!row) throw new HttpError(404, 'لا توجد قسيمة');
     const { from, to } = monthBounds(month);
-    send(res, 200, renderPayslip({ month, row, closed, deductions: deductionRows(db, from, to, userId), debts: debtRows(db, userId).filter((d) => d.date >= from && d.date <= to) }),
+    const hide = !!getSettings(db).hide_deductions && user.role !== 'admin';
+    send(res, 200, renderPayslip({ month, row, closed, deductions: hide ? [] : deductionRows(db, from, to, userId), debts: debtRows(db, userId).filter((d) => d.date >= from && d.date <= to), hide }),
       { 'Content-Type': 'text/html; charset=utf-8', ...SECURITY_HEADERS });
   }, { auth: true, page: true });
   r.get('/report/monthly', ({ url, res, user }) => {
