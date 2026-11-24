@@ -37,12 +37,12 @@ export function profile(db, user, { userId = null, month = null } = {}) {
   });
   let salary = null;
   if (money) {
-    const { rows, closed } = payrollFor(db, m);
+    const { rows, closed, period } = payrollFor(db, m);
     const row = rows.find((r) => r.userId === id);
     const hidden = !!settings.hide_deductions && !isFinance(user) && user.role !== 'admin';
     salary = {
-      month: m, closed: !!closed, base: u.salary, deductions: hidden ? null : row?.deductions || 0, repayments: row?.repayments || 0, net: row?.net ?? u.salary,
-      list: hidden ? [] : deductionRows(db, from, to, id), loanBalance: debtBalances(db).find((b) => b.user_id === id)?.balance || 0, hidden,
+      month: m, period, closed: !!closed, base: u.salary, deductions: hidden ? null : row?.deductions || 0, repayments: row?.repayments || 0, net: row?.net ?? u.salary,
+      list: hidden ? [] : deductionRows(db, period.from, period.to, id), loanBalance: debtBalances(db).find((b) => b.user_id === id)?.balance || 0, hidden,
     };
   }
   const recent = (sql) => db.prepare(sql).all(id);

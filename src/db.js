@@ -544,6 +544,11 @@ const MIGRATIONS = [
   );
   CREATE INDEX punch_selfies_time ON punch_selfies(created_at);
   `,
+  // v12 — payroll period: a closed month remembers the dates it covered (null = calendar month)
+  `
+  ALTER TABLE payroll_closes ADD COLUMN period_from TEXT;
+  ALTER TABLE payroll_closes ADD COLUMN period_to TEXT;
+  `,
 ];
 
 export function openDb(path) {

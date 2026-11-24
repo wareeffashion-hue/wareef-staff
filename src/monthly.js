@@ -2,7 +2,8 @@
 import { audit, tx } from './db.js';
 import { HttpError } from './http.js';
 import { getSettings } from './settings.js';
-import { localDate, localTime, monthBounds } from './time.js';
+import { dm, localDate, localTime, monthBounds } from './time.js';
+import { payMonthOf, payPeriod } from './payperiod.js';
 import { opsRows, payroll } from './reports.js';
 import { performance, prevMonth, scoreDetails } from './performance.js';
 import { appLink, notifyEmployee, queue, queued } from './notify.js';
@@ -13,22 +14,26 @@ export const closedMonth = (db, month) => db.prepare('SELECT p.*, u.name AS clos
 
 /** Money entries (deductions, loans, repayments) of a closed month can't change. */
 export function assertOpen(db, date) {
-  if (closedMonth(db, String(date).slice(0, 7))) throw new HttpError(400, `مسيّر شهر ${String(date).slice(0, 7)} مقفل. افتحه من «الرواتب» أولاً`);
+  const month = payMonthOf(db, String(date));
+  if (closedMonth(db, month)) throw new HttpError(400, `مسيّر شهر ${month} مقفل. افتحه من «الرواتب» أولاً`);
 }
 
 export function payrollFor(db, month, now = Date.now()) {
+  const period = payPeriod(db, month);
   const c = closedMonth(db, month);
-  if (c) return { rows: JSON.parse(c.snapshot), closed: { at: c.closed_at, by: c.closed_by_name || '' } };
-  return { rows: payroll(db, month, now), closed: null };
+  if (c) return { rows: JSON.parse(c.snapshot), closed: { at: c.closed_at, by: c.closed_by_name || '' }, period };
+  return { rows: payroll(db, month, now), closed: null, period };
 }
 
 export function closeMonth(db, admin, month, { send = true, now = Date.now() } = {}) {
-  // only once the month is fully over (from the 1st of the next month), so its last day is complete
-  if (localDate(now) <= monthBounds(month).to) throw new HttpError(400, 'لا يمكن إقفال شهر قبل نهايته');
+  // only once the payroll period is fully over, so its last day is complete
+  const period = payPeriod(db, month);
+  if (localDate(now) <= period.to) throw new HttpError(400, `لا يمكن إقفال الشهر قبل نهايته (آخر يوم في فترته ${dm(period.to)})`);
   if (closedMonth(db, month)) throw new HttpError(400, 'الشهر مقفل مسبقاً');
   const rows = payroll(db, month, now);
   tx(db, () => {
-    db.prepare('INSERT INTO payroll_closes (month, snapshot, closed_by, closed_at) VALUES (?, ?, ?, ?)').run(month, JSON.stringify(rows), admin.id, now);
+    db.prepare('INSERT INTO payroll_closes (month, snapshot, closed_by, closed_at, period_from, period_to) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(month, JSON.stringify(rows), admin.id, now, period.from, period.to);
     audit(db, admin.id, 'payroll.close', null, { month });
   });
   let sent = 0;
@@ -41,9 +46,10 @@ export function sendPayslips(db, month, { again = false } = {}) {
   if (!c) throw new HttpError(400, 'أقفل الشهر أولاً');
   const link = appLink(db);
   const hide = !!getSettings(db).hide_deductions; // the employee sees the net, not the deduction amounts
+  const period = payPeriod(db, month);
   let sent = 0;
   for (const r of JSON.parse(c.snapshot)) {
-    if (notifyEmployee(db, r.userId, 'payslip', msg.payslip({ name: r.name, month, r: hide ? { ...r, deductions: 0 } : r, link }), `payslip:${month}:${r.userId}:${c.closed_at}${again ? `:${Date.now()}` : ''}`)) sent++;
+    if (notifyEmployee(db, r.userId, 'payslip', msg.payslip({ name: r.name, month, period, r: hide ? { ...r, deductions: 0 } : r, link }), `payslip:${month}:${r.userId}:${c.closed_at}${again ? `:${Date.now()}` : ''}`)) sent++;
   }
   return sent;
 }

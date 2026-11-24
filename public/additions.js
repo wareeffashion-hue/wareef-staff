@@ -425,7 +425,7 @@ async function profile() {
         </div>` : '<p class="empty">ما عليك مهام مفتوحة 👌</p>'}
       </section>
     </div>
-    ${d.salary ? `<section class="panel"><header><h2>الراتب · ${C.esc(d.salary.month)}</h2>${d.salary.closed ? C.pill('مقفل', 'good') : C.pill('مفتوح، الأرقام تتحدث', 'warn')}</header>
+    ${d.salary ? `<section class="panel"><header><h2>الراتب · ${C.esc(d.salary.month)} <span class="muted small">${d.salary.period ? `${C.esc(d.salary.period.from)} → ${C.esc(d.salary.period.to)}` : ''}</span></h2>${d.salary.closed ? C.pill('مقفل', 'good') : C.pill('مفتوح، الأرقام تتحدث', 'warn')}</header>
       <div class="ad-money"><div><span>الراتب الأساسي</span><b>${C.money(d.salary.base)}</b></div>${d.salary.hidden ? '' : `<div><span>الخصومات</span><b class="bad">− ${C.money(d.salary.deductions)}</b></div>`}
         <div><span>أقساط السلف</span><b class="bad">− ${C.money(d.salary.repayments)}</b></div><div class="net"><span>الصافي</span><b>${C.money(d.salary.net)}</b></div><div><span>متبقي السلف</span><b>${C.money(d.salary.loanBalance)}</b></div></div>
       ${d.salary.list.length ? C.table(['التاريخ', 'الخصم', 'المبلغ', 'التفاصيل'], d.salary.list.map((x) => `<tr><td>${x.date}</td><td>${C.esc(C.DED[x.category] || x.category)}</td><td>${C.money(x.amount)}</td><td class="wrap">${C.esc(x.reason)}</td></tr>`)) : ''}
@@ -534,13 +534,13 @@ async function record() {
 
 // ------------------------------------------------------------------ accounts
 async function finance() {
-  const month = sessionStorage.getItem('fn-month') || C.today().slice(0, 7);
-  const d = await C.api(`/api/finance?month=${month}`);
+  const picked = sessionStorage.getItem('fn-month');
+  const d = await C.api(`/api/finance${picked ? `?month=${picked}` : ''}`);
   const sum = (k) => d.payroll.reduce((t, r) => t + (r[k] || 0), 0);
   const DEBT = { loan: ['سلفة', 'warn'], repayment: ['سداد', 'good'] };
   const pg = C.render(`
     <div class="topline"><h1>الحسابات</h1><div class="tools"><input type="month" id="fn-month" value="${d.month}" aria-label="الشهر"></div></div>
-    <section class="panel closebar ${d.closed ? 'done' : ''}"><p>${d.closed ? `${C.pill('مقفل', 'good')} الشهر مقفل والأرقام مجمّدة.` : `${C.pill('مفتوح', 'warn')} الأرقام تتحدث مع كل بصمة وخصم.`}
+    <section class="panel closebar ${d.closed ? 'done' : ''}"><p>${d.closed ? `${C.pill('مقفل', 'good')} الشهر مقفل والأرقام مجمّدة.` : `${C.pill('مفتوح', 'warn')} الأرقام تتحدث مع كل بصمة وخصم.`} <span class="muted small">الفترة من ${C.esc(d.period.from)} إلى ${C.esc(d.period.to)}</span>
       ${d.canLock ? (d.closed ? '<button class="btn sm ghost" id="fn-open" type="button">فتح الشهر للتعديل</button>' : '<button class="btn sm" id="fn-close" type="button">إقفال الشهر</button>') : ''}</p></section>
     <section class="panel"><header><h2>مسيّر الرواتب</h2></header>
       ${C.table(['الموظف', 'الراتب', 'حضور', 'غياب', 'الخصومات', 'أقساط السلف', 'الصافي', 'متبقي السلف', ''], d.payroll.map((r) => `<tr><td><b>${C.esc(r.name)}</b></td><td>${C.money(r.salary)}</td><td>${r.presentDays}/${r.workDays}</td><td>${r.absentDays}</td>
@@ -666,12 +666,24 @@ async function settingsPanel() {
     <label class="check"><input type="checkbox" id="ad-hide" ${s.hide_deductions ? 'checked' : ''}>إخفاء مبالغ الخصومات عن الموظفين (يشوف الصافي فقط في «سجلي» والقسيمة والرسائل)</label>
     <p class="muted small">المدير والحسابات يشوفون كل التفاصيل دائماً.</p>
     <label class="check"><input type="checkbox" id="ad-selfie" ${s.selfie_on_suspicion ? 'checked' : ''}>صورة تحقق عند البصمة المشتبه بها (جهاز جديد، خارج الموقع أو الشبكة)</label>
-    <p class="muted small">الصورة تُلتقط لحظة البصمة فقط وتُحذف بعد 30 يوماً. ما فيه تتبع للموقع بين البصمات ولا خارج الدوام.</p>`;
+    <p class="muted small">الصورة تُلتقط لحظة البصمة فقط وتُحذف بعد 30 يوماً. ما فيه تتبع للموقع بين البصمات ولا خارج الدوام.</p>
+    <div class="row"><label class="f">يوم بداية شهر الرواتب<input type="number" id="ad-payday" min="1" max="28" step="1" value="${s.payroll_start_day}"></label></div>
+    <p class="muted small" id="ad-payday-note"></p>`;
   (C.$('.topline', main)?.nextElementSibling ? main.insertBefore(panel, C.$('.topline', main).nextElementSibling) : main.append(panel));
   const sc = C.$('#ad-selfie', panel);
   sc.onchange = async () => {
     const r = await C.act(null, () => C.api('/api/addition-settings', { method: 'PUT', body: { selfie_on_suspicion: sc.checked } }), sc.checked ? 'فُعّلت صورة التحقق' : 'أُوقفت صورة التحقق');
     if (!r) sc.checked = !sc.checked;
+  };
+  const pd = C.$('#ad-payday', panel);
+  const pdNote = (x) => {
+    C.$('#ad-payday-note', panel).innerHTML = `${x.payroll_start_day === 1 ? 'مسيّر الرواتب بالشهر الميلادي (من 1 إلى آخر الشهر).' : `مسيّر كل شهر من يوم ${x.payroll_start_day} في الشهر السابق إلى يوم ${x.payroll_start_day - 1} فيه، ويُقفل من يوم ${x.payroll_start_day}.`}
+      المسيّر الحالي (${C.esc(x.payroll_month)}): من <b>${C.esc(x.payroll_period.from)}</b> إلى <b>${C.esc(x.payroll_period.to)}</b>. الأشهر المقفلة تبقى على فترتها.`;
+  };
+  pdNote(s);
+  pd.onchange = async () => {
+    const r = await C.act(null, () => C.api('/api/addition-settings', { method: 'PUT', body: { payroll_start_day: Number(pd.value) || 1 } }), 'تم حفظ بداية شهر الرواتب');
+    if (r) { pd.value = r.payroll_start_day; pdNote(r); } else pd.value = s.payroll_start_day;
   };
   const cb = C.$('#ad-hide', panel);
   cb.onchange = async () => {

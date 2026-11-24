@@ -13,6 +13,7 @@ import { getSettings, saveSettings } from '../settings.js';
 import { at, localDate, localTime } from '../time.js';
 import { exceptionOf, loadExceptions, periodsFor } from '../attendance.js';
 import { assertOpen } from '../monthly.js';
+import { payMonthOf, payPeriod, payrollStartDay } from '../payperiod.js';
 import { DEDUCTION_LABELS } from '../reports.js';
 import { deductionNotice, link, msg, toSupervisors, toUser } from './alerts.js';
 import { logChange } from './changelog.js';
@@ -225,12 +226,19 @@ export function deleteException(db, user, id, body = {}) {
 export function additionSettings(db, user) {
   if (user.role !== 'admin') throw new HttpError(403, 'للمدير فقط');
   const s = getSettings(db);
-  return { hide_deductions: !!s.hide_deductions, selfie_on_suspicion: !!s.selfie_on_suspicion };
+  return { hide_deductions: !!s.hide_deductions, selfie_on_suspicion: !!s.selfie_on_suspicion, payroll_start_day: payrollStartDay(db), payroll_period: payPeriod(db, payMonthOf(db, localDate())), payroll_month: payMonthOf(db, localDate()) };
 }
 export function saveAdditionSettings(db, user, body) {
   if (user.role !== 'admin') throw new HttpError(403, 'للمدير فقط');
   const before = !!getSettings(db).hide_deductions;
-  const next = saveSettings(db, { ...('hide_deductions' in body ? { hide_deductions: !!body.hide_deductions } : {}), ...('selfie_on_suspicion' in body ? { selfie_on_suspicion: !!body.selfie_on_suspicion } : {}) });
+  const startBefore = payrollStartDay(db);
+  const next = saveSettings(db, {
+    ...('hide_deductions' in body ? { hide_deductions: !!body.hide_deductions } : {}),
+    ...('selfie_on_suspicion' in body ? { selfie_on_suspicion: !!body.selfie_on_suspicion } : {}),
+    ...('payroll_start_day' in body ? { payroll_start_day: body.payroll_start_day } : {}),
+  });
   if (before !== next.hide_deductions) logChange(db, { actor: user, area: 'salary', action: 'إظهار الخصومات للموظفين', before: before ? 'مخفية' : 'ظاهرة', after: next.hide_deductions ? 'مخفية' : 'ظاهرة', reason: text(body.reason, 300) || 'إعداد' });
-  return { ok: true, hide_deductions: next.hide_deductions, selfie_on_suspicion: next.selfie_on_suspicion };
+  const day = (d) => (d === 1 ? 'الشهر الميلادي (1 إلى آخره)' : `من ${d} إلى ${d - 1}`);
+  if (startBefore !== next.payroll_start_day) logChange(db, { actor: user, area: 'salary', action: 'فترة شهر الرواتب', before: day(startBefore), after: day(next.payroll_start_day), reason: text(body.reason, 300) || 'إعداد' });
+  return { ok: true, ...additionSettings(db, user) };
 }

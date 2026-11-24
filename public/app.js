@@ -16,6 +16,8 @@ const localIso = (ts) => new Date(ts + tz * 60000).toISOString();
 const fmtT = (ts) => (ts ? localIso(ts).slice(11, 16) : '—');
 const today = () => localIso(nowMs()).slice(0, 10);
 const thisMonth = () => today().slice(0, 7);
+// a payroll period as "27/10 – 26/11" (a payroll month can start on the 27th of the month before)
+const periodText = (p) => (p ? `${p.from.slice(8)}/${p.from.slice(5, 7)} – ${p.to.slice(8)}/${p.to.slice(5, 7)}` : '');
 const addDays = (d, n) => new Date(Date.parse(`${d}T00:00:00Z`) + n * 86400000).toISOString().slice(0, 10);
 const money = (n) => `${Number(n || 0).toLocaleString('en-US', { maximumFractionDigits: 2 })}`;
 const int = (n) => Number(n || 0).toLocaleString('en-US');
@@ -645,12 +647,13 @@ function locate() {
 
 // ------------------------------------------------------------------ employee: my month
 PAGES.mine = async () => {
-  const month = sessionStorage.getItem('mine-month') || thisMonth();
-  const d = await api(`/api/my/month?month=${month}`);
+  const picked = sessionStorage.getItem('mine-month');
+  const d = await api(`/api/my/month${picked ? `?month=${picked}` : ''}`);
+  const month = d.month;
   const s = d.summary || {};
   const dedTotal = d.deductions.reduce((t, x) => t + x.amount, 0);
   const pg = render(`
-    <div class="topline"><h1>سجلي الشهري</h1><div class="tools"><input type="month" id="mm" value="${month}" aria-label="الشهر">
+    <div class="topline"><h1>سجلي الشهري</h1><div class="tools"><span class="muted small">${periodText(d.period)}</span><input type="month" id="mm" value="${month}" aria-label="الشهر">
       ${d.closed ? `<a class="btn" href="/payslip?month=${month}" target="_blank" rel="noopener">${icon('file')}قسيمة الراتب</a>` : ''}</div></div>
     ${d.award?.user_id === ME.id ? `<section class="panel award"><b>🏆 أنت موظف الشهر</b><span>تقييمك ${d.award.score} من 100. شكراً على التزامك وجهدك 🤍</span></section>`
       : d.award ? `<section class="panel award soft"><b>🏆 موظف الشهر: ${esc(d.award.name)}</b><span>المنافسة مفتوحة للشهر الجاي</span></section>` : ''}
@@ -1052,8 +1055,9 @@ PAGES.attendance = async () => {
 
 // ------------------------------------------------------------------ manager: payroll
 PAGES.payroll = async () => {
-  const month = sessionStorage.getItem('pay-month') || thisMonth();
-  const d = await api(`/api/payroll?month=${month}`);
+  const picked = sessionStorage.getItem('pay-month');
+  const d = await api(`/api/payroll${picked ? `?month=${picked}` : ''}`);
+  const month = d.month;
   const sum = (k) => d.rows.reduce((t, r) => t + r[k], 0);
   const pg = render(`
     <div class="topline"><h1>مسيّر الرواتب</h1><div class="tools"><input type="month" id="pm" value="${month}" aria-label="الشهر">
@@ -1063,7 +1067,8 @@ PAGES.payroll = async () => {
     <section class="panel closebar ${d.closed ? 'done' : ''}">
       ${d.closed
         ? `<p>${pill('مقفل', 'good')} أُقفل ${esc(d.closed.by ? `بواسطة ${d.closed.by} ` : '')}يوم ${localIso(d.closed.at).slice(0, 10)}. الأرقام مجمّدة، والخصومات والسلف لهذا الشهر لا تتغير حتى تفتحه.</p>`
-        : `<p>${pill('مفتوح', 'warn')} الأرقام تتحدث مع كل بصمة وخصم. في نهاية الشهر اضغط «إقفال الشهر»: يتجمّد المسيّر وتوصل كل موظف قسيمة راتبه على واتساب.</p>`}
+        : `<p>${pill('مفتوح', 'warn')} الأرقام تتحدث مع كل بصمة وخصم. بعد آخر يوم في الفترة اضغط «إقفال الشهر»: يتجمّد المسيّر وتوصل كل موظف قسيمة راتبه على واتساب.</p>`}
+      <p class="muted small">فترة مسيّر ${esc(month)}: من <b>${esc(d.period.from)}</b> إلى <b>${esc(d.period.to)}</b>. يوم بداية الشهر يتغيّر من «الإعدادات ← إعدادات الإضافات».</p>
     </section>
     <section class="panel">
       ${table(['الموظف', 'الراتب', 'حضور', 'غياب', 'أيام تأخير', 'دقائق التأخير', 'خروج', 'الخصم المقترح', 'الخصومات المعتمدة', 'أقساط السلف', 'الصافي', 'متبقي السلف', ''],
@@ -1077,7 +1082,7 @@ PAGES.payroll = async () => {
   $$('[data-ded]', pg).forEach((b) => { b.onclick = () => deductionModal(+b.dataset.ded, b.dataset.amt); });
   const close = $('#pay-close', pg);
   if (close) close.onclick = async () => {
-    if (!confirm(`إقفال مسيّر ${month}؟ تتجمّد الأرقام وتوصل القسائم للموظفين على واتساب.`)) return;
+    if (!confirm(`إقفال مسيّر ${month} (${periodText(d.period)})؟ تتجمّد الأرقام وتوصل القسائم للموظفين على واتساب.`)) return;
     const r = await act(close, () => api('/api/payroll/close', { method: 'POST', body: { month } }));
     if (r) { toast(`تم الإقفال. أُرسلت ${r.sent} قسيمة`); refresh(); }
   };
@@ -1112,10 +1117,9 @@ const deductionFields = (staff, userId = '', amount = '') => `
 
 // ------------------------------------------------------------------ manager: deductions & debts
 PAGES.money = async () => {
-  const month = sessionStorage.getItem('money-month') || thisMonth();
-  const from = `${month}-01`;
-  const to = addDays(new Date(Date.UTC(+month.slice(0, 4), +month.slice(5), 1)).toISOString().slice(0, 10), -1);
-  const [ded, debts, staff] = await Promise.all([api(`/api/deductions?from=${from}&to=${to}`), api('/api/debts'), staffList()]);
+  const picked = sessionStorage.getItem('money-month');
+  const [ded, debts, staff] = await Promise.all([api(`/api/deductions${picked ? `?month=${picked}` : ''}`), api('/api/debts'), staffList()]);
+  const month = ded.month;
   const pg = render(`
     <div class="topline"><h1>الخصومات والسلف</h1><div class="tools"><a class="btn ghost" href="/api/export/debts">${icon('down')}تصدير السلف</a></div></div>
     <div class="kpis">${debts.balances.map((b) => `<div class="kpi ${b.balance > 0 ? 'warn' : ''}"><b>${money(b.balance)}</b><span>${esc(b.name)}: متبقي السلف</span></div>`).join('')}</div>
@@ -1138,7 +1142,7 @@ PAGES.money = async () => {
         </form>
       </section>
     </div>
-    <section class="panel"><header><h2>الخصومات</h2><input type="month" id="mm" value="${month}" aria-label="الشهر"></header>
+    <section class="panel"><header><h2>الخصومات <span class="muted small">${periodText(ded)}</span></h2><input type="month" id="mm" value="${month}" aria-label="الشهر"></header>
       ${table(['التاريخ', 'الموظف', 'السبب', 'المبلغ', 'التفاصيل', ''], ded.deductions.map((x) => `<tr><td>${x.date}</td><td>${esc(x.user_name)}</td><td>${DED[x.category]}</td><td><b>${money(x.amount)}</b></td><td class="wrap">${esc(x.reason)}</td><td><button class="link bad" data-dd="${x.id}">حذف</button></td></tr>`),
         { empty: 'لا توجد خصومات في هذا الشهر', foot: ded.deductions.length ? ['', '', 'الإجمالي', money(ded.deductions.reduce((t, x) => t + x.amount, 0)), '', ''] : null })}
     </section>

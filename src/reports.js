@@ -1,8 +1,9 @@
 // Aggregations shared by the dashboard, the printable daily report and CSV exports.
 import { loadAttendance, summarize } from './attendance.js';
 import { getSettings } from './settings.js';
-import { localTime, monthBounds } from './time.js';
+import { localTime } from './time.js';
 import { FLAG_LABELS } from './punch.js';
+import { payPeriod } from './payperiod.js';
 
 const round2 = (n) => Math.round(n * 100) / 100;
 
@@ -83,7 +84,7 @@ export function debtBalances(db, upTo = null) {
 
 /** Month-end view per employee: attendance, deductions, salary repayments, net pay. */
 export function payroll(db, month, now = Date.now()) {
-  const { from, to } = monthBounds(month);
+  const { from, to } = payPeriod(db, month);
   const att = summarize(loadAttendance(db, { from, to, now }));
   // a deactivated employee still gets paid for the month if anything happened for them in it
   const users = db.prepare(`SELECT id, name, salary FROM users u WHERE role = 'employee' AND (active = 1

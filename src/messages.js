@@ -258,10 +258,13 @@ export const backupCaption = ({ date }) => `🗄️ *نسخة احتياطية �
 const MONTHS = ['يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو', 'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر'];
 export const monthName = (m) => `${MONTHS[Number(m.slice(5, 7)) - 1]} ${m.slice(0, 4)}`;
 
-export const payslip = ({ name, month, r, link }) => card({
+const ddmm = (d) => `${d.slice(8)}/${d.slice(5, 7)}`;
+
+export const payslip = ({ name, month, period, r, link }) => card({
   icon: '🧾', title: `مسيّر راتب ${monthName(month)}`, hello: `${name}،`,
   lines: ['تم اعتماد مسيّر الشهر، وهذي تفاصيل راتبك:'],
   fields: [
+    ...(period ? [['الفترة', `${ddmm(period.from)} – ${ddmm(period.to)}`]] : []),
     ['الراتب', sar(r.salary)],
     ...(r.workDays ? [['أيام الحضور', `${r.presentDays} من ${r.workDays}`]] : []),
     ...(r.absentDays ? [['أيام الغياب', r.absentDays]] : []),
