@@ -98,11 +98,11 @@ const page = (title, body) => `<!doctype html><html lang="ar" dir="rtl"><head><m
 <script src="/print.js"></script></body></html>`;
 
 /** `hide`: the employee's copy when the owner hides deduction amounts: the net without the deductions. */
-export function renderPayslip({ month, row: r, closed, deductions, debts, hide = false }) {
+export function renderPayslip({ month, period = null, row: r, closed, deductions, debts, hide = false }) {
   return page(`قسيمة راتب ${r.name} ${month}`, `
 <header class="head">
   <img src="/img/logo-mark.png" alt="وريف" class="logo">
-  <div><h1>قسيمة راتب</h1><p>${esc(r.name)} · ${esc(monthName(month))} ${closed ? '' : '<span class="draft">مسودة: الشهر لم يُقفل</span>'}</p></div>
+  <div><h1>قسيمة راتب</h1><p>${esc(r.name)} · ${esc(monthName(month))}${period ? ` · من ${esc(period.from)} إلى ${esc(period.to)}` : ''} ${closed ? '' : '<span class="draft">مسودة: الشهر لم يُقفل</span>'}</p></div>
   <button type="button" id="print" class="noprint">طباعة أو حفظ PDF</button>
 </header>
 <section class="kpis">

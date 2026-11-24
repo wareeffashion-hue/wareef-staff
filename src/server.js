@@ -12,7 +12,8 @@ import {
   sessionCookie, tokenHash, SESSION_COOKIE, validatePassword, validUsername, verifyPassword,
 } from './auth.js';
 import { getSettings, saveSettings, allPeriods, permissionList } from './settings.js';
-import { localDate, isDate, addDays, monthBounds, localTime, at } from './time.js';
+import { localDate, isDate, addDays, localTime, at } from './time.js';
+import { payMonthOf, payPeriod } from './payperiod.js';
 import { computeDay, exceptionOf, loadAttendance, loadExceptions, periodsFor, summarize } from './attendance.js';
 import { FLAG_LABELS, NEXT, lastPunch, managerPunch, recordPunch, voidPunch } from './punch.js';
 import {
@@ -120,6 +121,8 @@ function myToday(db, user, now = Date.now()) {
 
 export function createApp(db) {
   const r = new Router();
+  // a payroll month from the query, or the one today falls in
+  const payMonth = (v) => (v ? needMonth(v) : payMonthOf(db, localDate()));
   const loginLimit = rateLimiter({ limit: 10, windowMs: 15 * 60_000 });
   const loginUserLimit = rateLimiter({ limit: 20, windowMs: 15 * 60_000 }); // per account, whatever the IP
 
@@ -247,13 +250,13 @@ export function createApp(db) {
     return myToday(db, user);
   }, { auth: true });
   r.get('/api/my/month', ({ url, user }) => {
-    const month = needMonth(url.searchParams.get('month'));
-    const { from, to } = monthBounds(month);
+    const month = payMonth(url.searchParams.get('month'));
+    const { from, to } = payPeriod(db, month);
     const days = loadAttendance(db, { from, to, userId: user.id });
     const balance = debtBalances(db).find((b) => b.user_id === user.id);
     const hidden = !!getSettings(db).hide_deductions && user.role !== 'admin';
     return {
-      month, days: days.map(({ suggested, ...d }) => d), summary: summarize(days).map(({ suggested, ...s }) => s)[0] || null,
+      month, period: { from, to }, days: days.map(({ suggested, ...d }) => d), summary: summarize(days).map(({ suggested, ...s }) => s)[0] || null,
       deductions: hidden ? [] : deductionRows(db, from, to, user.id), hidden, debts: debtRows(db, user.id), balance: balance?.balance || 0,
       closed: !!closedMonth(db, month), award: awardOf(db, month),
     };
@@ -697,8 +700,10 @@ export function createApp(db) {
   // ------------------------------------------------------------ manager: money
   r.get('/api/deductions', ({ url, user }) => {
     requireAdmin(user);
-    const { from, to } = range(url, 31);
-    return { deductions: deductionRows(db, from, to, Number(url.searchParams.get('user_id')) || null) };
+    // by payroll month (?month=, or the current one), or by an explicit ?from=&to= range
+    const month = url.searchParams.get('from') ? null : payMonth(url.searchParams.get('month'));
+    const { from, to } = month ? payPeriod(db, month) : range(url, 31);
+    return { month, from, to, deductions: deductionRows(db, from, to, Number(url.searchParams.get('user_id')) || null) };
   }, { auth: true });
   r.post('/api/deductions', async ({ req, user }) => {
     requireAdmin(user);
@@ -761,7 +766,7 @@ export function createApp(db) {
   }, { auth: true });
   r.get('/api/payroll', ({ url, user }) => {
     requireAdmin(user);
-    const month = needMonth(url.searchParams.get('month'));
+    const month = payMonth(url.searchParams.get('month'));
     return { month, ...payrollFor(db, month) };
   }, { auth: true });
   // the owner, or the accounts employee given the "reopen a closed month" permission
@@ -978,8 +983,8 @@ export function createApp(db) {
     csv(res, `wareef-attendance-${from}_${to}`, [attendanceSection(loadAttendance(db, { from, to }), undefined, user.role === 'admin')]);
   });
   exp('/api/export/payroll', (url, res) => {
-    const month = needMonth(url.searchParams.get('month'));
-    const { from, to } = monthBounds(month);
+    const month = payMonth(url.searchParams.get('month'));
+    const { from, to } = payPeriod(db, month);
     csv(res, `wareef-payroll-${month}`, [payrollSection(payroll(db, month), month), deductionsSection(deductionRows(db, from, to)),
       debtsSection(debtRows(db).filter((d) => d.date >= from && d.date <= to))]);
   });
@@ -1022,13 +1027,13 @@ export function createApp(db) {
   r.get('/payslip', ({ url, res, user }) => {
     const month = needMonth(url.searchParams.get('month'));
     const userId = user.role === 'admin' ? Number(url.searchParams.get('user_id')) : user.id;
-    const { rows, closed } = payrollFor(db, month);
+    const { rows, closed, period } = payrollFor(db, month);
     if (!closed && user.role !== 'admin') throw new HttpError(404, 'مسيّر هذا الشهر لم يُعتمد بعد');
     const row = rows.find((x) => x.userId === userId);
     if (!row) throw new HttpError(404, 'لا توجد قسيمة');
-    const { from, to } = monthBounds(month);
+    const { from, to } = period;
     const hide = !!getSettings(db).hide_deductions && user.role !== 'admin';
-    send(res, 200, renderPayslip({ month, row, closed, deductions: hide ? [] : deductionRows(db, from, to, userId), debts: debtRows(db, userId).filter((d) => d.date >= from && d.date <= to), hide }),
+    send(res, 200, renderPayslip({ month, period, row, closed, deductions: hide ? [] : deductionRows(db, from, to, userId), debts: debtRows(db, userId).filter((d) => d.date >= from && d.date <= to), hide }),
       { 'Content-Type': 'text/html; charset=utf-8', ...SECURITY_HEADERS });
   }, { auth: true, page: true });
   r.get('/report/monthly', ({ url, res, user }) => {

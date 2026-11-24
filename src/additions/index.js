@@ -1,6 +1,7 @@
 // Routes and periodic jobs of the additions, registered from server.js with one call.
 import { HttpError, parseJson, readBody, send } from '../http.js';
-import { monthBounds, localDate } from '../time.js';
+import { localDate } from '../time.js';
+import { payMonthOf } from '../payperiod.js';
 import { renderPayslip } from '../print.js';
 import { payrollFor } from '../monthly.js';
 import { debtRows, deductionRows } from '../reports.js';
@@ -113,13 +114,13 @@ export function registerAdditions(r, db) {
   r.post('/api/finance/debts', async ({ req, user }) => addDebt(db, user, await body(req)), auth);
   r.get('/finance/payslip', ({ url, res, user }) => {
     requireFinance(user);
-    const month = /^\d{4}-(0[1-9]|1[0-2])$/.test(url.searchParams.get('month') || '') ? url.searchParams.get('month') : localDate().slice(0, 7);
+    const month = /^\d{4}-(0[1-9]|1[0-2])$/.test(url.searchParams.get('month') || '') ? url.searchParams.get('month') : payMonthOf(db, localDate());
     const userId = Number(url.searchParams.get('user_id'));
-    const { rows, closed } = payrollFor(db, month);
+    const { rows, closed, period } = payrollFor(db, month);
     const row = rows.find((x) => x.userId === userId);
     if (!row) throw new HttpError(404, 'لا توجد قسيمة');
-    const { from, to } = monthBounds(month);
-    send(res, 200, renderPayslip({ month, row, closed, deductions: deductionRows(db, from, to, userId), debts: debtRows(db, userId).filter((d) => d.date >= from && d.date <= to) }), PAGE_HEADERS);
+    const { from, to } = period;
+    send(res, 200, renderPayslip({ month, period, row, closed, deductions: deductionRows(db, from, to, userId), debts: debtRows(db, userId).filter((d) => d.date >= from && d.date <= to) }), PAGE_HEADERS);
   }, page);
   r.get('/api/delegates', ({ user }) => { requireSup(user); return { delegates: delegates(db), people: people(db).filter((p) => p.role === 'employee') }; }, auth);
   r.put('/api/delegates', async ({ req, user }) => setDelegate(db, user, await body(req)), auth);

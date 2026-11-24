@@ -6,7 +6,8 @@
 //   supervisor approves it, and nobody approves a deduction they recorded or one on themselves.
 import { audit, tx } from '../db.js';
 import { HttpError } from '../http.js';
-import { localDate, monthBounds } from '../time.js';
+import { localDate } from '../time.js';
+import { payMonthOf } from '../payperiod.js';
 import { assertOpen, payrollFor } from '../monthly.js';
 import { DEDUCTION_LABELS, debtBalances, debtRows, deductionRows } from '../reports.js';
 import { deductionNotice, link, msg, toSupervisors, toUser } from './alerts.js';
@@ -22,11 +23,11 @@ const employee = (db, id) => {
 // ------------------------------------------------------------------ accountant
 export function financeOverview(db, user, { month }) {
   requireFinance(user);
-  const m = /^\d{4}-(0[1-9]|1[0-2])$/.test(month || '') ? month : localDate().slice(0, 7);
-  const { from, to } = monthBounds(m);
-  const { rows, closed } = payrollFor(db, m);
+  const m = /^\d{4}-(0[1-9]|1[0-2])$/.test(month || '') ? month : payMonthOf(db, localDate());
+  const { rows, closed, period } = payrollFor(db, m);
+  const { from, to } = period;
   return {
-    month: m, payroll: rows, closed,
+    month: m, period, payroll: rows, closed,
     deductions: deductionRows(db, from, to),
     debts: debtRows(db).filter((d) => d.date >= from && d.date <= to),
     balances: debtBalances(db),
