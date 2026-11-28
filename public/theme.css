@@ -1,0 +1,138 @@
+/* Theme v2 (2026-11): same iridescent colours, softer and rounder surfaces, a grouped icon rail,
+   the WAREEF signature (the logo drawn as one thin foil line, far larger than the screen) behind every page,
+   and a phone bar of five with the punch in the middle. Loaded last; overrides styles.css only. */
+
+:root { --r: 20px; --r-sm: 14px; }
+
+/* ---------- signature: the logo line, cropped far beyond the frame */
+.sig-bg { position: fixed; z-index: 0; pointer-events: none; width: 150vmax; aspect-ratio: 1200 / 1015;
+  inset-inline-end: -42vmax; top: -48vmax; background: url("/img/wareef-line.svg") center / contain no-repeat; opacity: .38; }
+@media (max-width: 860px) { .sig-bg { width: 230vmax; inset-inline-end: -120vmax; top: -70vmax; opacity: .34; } }
+.shell > .rail, .shell > .main, .shell > .tabbar { position: relative; z-index: 1; }
+.shell > .tabbar { position: fixed; }
+.shell > .rail { position: sticky; }
+
+/* ---------- shell: a slim rail of groups */
+@media (min-width: 861px) { .shell { grid-template-columns: 104px 1fr; } }
+.rail { margin: 14px; margin-inline-end: 0; height: calc(100vh - 28px); top: 14px; border-radius: 26px; border: 1px solid rgb(255 255 255 / 75%);
+  padding: 16px 8px; align-items: center; gap: 4px; box-shadow: 0 1px 0 rgb(255 255 255 / 80%) inset, 0 24px 60px -34px rgb(60 40 120 / 35%); overflow-y: auto; scrollbar-width: none; }
+.rail::-webkit-scrollbar { display: none; }
+.rail .brand { padding: 2px 0 14px; justify-content: center; }
+.rail .brand img { height: 40px; }
+.rail a { flex-direction: column; justify-content: center; gap: 3px; width: 76px; min-height: 58px; padding: 8px 4px; border-radius: 18px; font-size: .72rem; line-height: 1.25; text-align: center; color: var(--ink-2); }
+.rail a .ico { width: 21px; height: 21px; }
+.rail a span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rail a.on { color: var(--btn-ink); font-weight: 500; }
+.rail .nav-ink { border-radius: 18px; }
+.rail .foot { width: 100%; justify-items: center; padding: 10px 0 0; }
+@media (prefers-reduced-motion: no-preference) {
+  .rail a:not(.on):hover { padding-inline-start: 4px; }
+  .rail a:hover .ico { transform: translateY(-2px) scale(1.08); }
+}
+.main { padding-block: 22px 48px; gap: 18px; }
+
+/* ---------- the group's pages as tabs above the page */
+.subnav { display: flex; gap: 8px; flex-wrap: wrap; }
+.subnav a { display: inline-flex; align-items: center; gap: 7px; height: 40px; padding: 0 16px; border-radius: 999px; text-decoration: none; color: var(--ink-2); font-size: .88rem; font-weight: 500;
+  background: var(--surface); border: 1px solid rgb(255 255 255 / 70%); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); box-shadow: 0 10px 30px -24px rgb(60 40 120 / 40%); white-space: nowrap; }
+.subnav a .ico { width: 17px; height: 17px; }
+.subnav a:hover { color: var(--ink); background: #fff; }
+.subnav a.on { background: var(--ink); color: #fff; border-color: var(--ink); }
+@media (max-width: 860px) {
+  .subnav { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; margin-inline: -16px; padding-inline: 16px; padding-bottom: 2px; }
+  .subnav::-webkit-scrollbar { display: none; }
+  .subnav a { height: 36px; padding: 0 13px; font-size: .82rem; }
+}
+
+/* ---------- surfaces: rounder, softer, frosted */
+.panel { border-radius: var(--r); border-color: rgb(255 255 255 / 70%); padding: 20px; box-shadow: 0 1px 0 rgb(255 255 255 / 85%) inset, 0 22px 60px -36px rgb(60 40 120 / 34%); }
+.kpi, .band, .sc, .item, .scard { border-radius: var(--r-sm); }
+.kpi { border-color: rgb(255 255 255 / 70%); box-shadow: 0 14px 40px -30px rgb(60 40 120 / 35%); }
+.tbl { border-radius: var(--r-sm); background: rgb(255 255 255 / 55%); }
+th { background: transparent; color: var(--muted); border-bottom-color: var(--line-2); }
+tbody tr:hover td { background: rgb(255 255 255 / 60%); }
+.btn { border-radius: 999px; padding-inline: 20px; }
+.btn.sm { border-radius: 999px; }
+.seg { border-radius: 999px; padding: 4px; }
+.seg button { border-radius: 999px; padding-inline: 14px; }
+input, select, textarea { border-radius: 12px; }
+textarea { border-radius: 14px; }
+.pill { padding: 3px 11px; }
+dialog { border-radius: 24px; }
+.toast { border-radius: 999px; }
+.sc .avatar, .ad-avatar { background: var(--foil); }
+
+/* ---------- phone: header with the mark, five-slot bar, the punch raised in the middle */
+.mobile-head img { height: 38px; }
+@media (max-width: 860px) {
+  .tabbar { justify-content: space-around; align-items: end; overflow: visible; gap: 0; padding: 8px 6px calc(8px + env(safe-area-inset-bottom, 0px));
+    border-radius: 24px 24px 0 0; border-top: 1px solid rgb(255 255 255 / 80%); box-shadow: 0 -16px 40px -28px rgb(60 40 120 / 35%); }
+  .tabbar a { flex: 1 1 0; min-width: 0; font-size: .7rem; border-radius: 14px; }
+  .tabbar a span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+  .tabbar .fab { flex: 0 0 64px; height: 64px; margin: -30px 4px 0; border-radius: 50%; display: grid; place-items: center; padding: 0;
+    background: var(--foil); color: var(--btn-ink); border: 5px solid #fbfaf8; box-shadow: 0 12px 28px -10px rgb(123 85 240 / 55%); }
+  .tabbar .fab .ico { width: 26px; height: 26px; }
+  .tabbar .fab.on { box-shadow: 0 0 0 3px rgb(123 85 240 / 25%), 0 12px 28px -10px rgb(123 85 240 / 65%); }
+  .main { padding-bottom: calc(110px + env(safe-area-inset-bottom, 0px)); }
+}
+@media (min-width: 861px) { .tabbar .fab { display: none; } }
+
+/* all pages, when the bar cannot hold every group */
+dialog.sheet { width: min(560px, calc(100vw - 16px)); }
+@media (max-width: 860px) {
+  dialog.sheet { margin: auto auto 0; width: 100vw; max-width: 100vw; border-radius: 24px 24px 0 0; max-height: 82vh; padding-bottom: env(safe-area-inset-bottom, 0px); }
+}
+.more-grid { display: grid; gap: 16px; }
+.more-grid section { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
+.more-grid h3 { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; font-size: .9rem; color: var(--muted); font-weight: 500; }
+.more-grid h3 .ico { width: 16px; height: 16px; }
+.more-grid a { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-radius: 14px; background: var(--sunk); text-decoration: none; color: var(--ink); font-size: .9rem; }
+.more-grid a:hover { background: rgb(123 85 240 / 10%); }
+
+/* ---------- signature details */
+.sig-mark { display: inline-block; width: 1.05em; height: .9em; vertical-align: -.05em; margin-inline-start: .35em;
+  background: var(--foil); -webkit-mask: url("/img/wareef-mark.svg") center / contain no-repeat; mask: url("/img/wareef-mark.svg") center / contain no-repeat; }
+.hair { display: block; width: 64px; height: 2px; border-radius: 2px; background: var(--foil); margin-top: 8px; }
+.punch.panel { position: relative; overflow: hidden; }
+.punch.panel::after { content: ""; position: absolute; width: 190px; aspect-ratio: 1160 / 975; inset-inline-start: -50px; bottom: -70px; pointer-events: none; opacity: .06;
+  background: var(--ink); -webkit-mask: url("/img/wareef-mark.svg") center / contain no-repeat; mask: url("/img/wareef-mark.svg") center / contain no-repeat; }
+.punch.panel > * { position: relative; z-index: 1; }
+
+/* ---------- new HR pages */
+.hr-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap: 18px; align-items: start; }
+.hr-row { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-top: 1px solid var(--line); }
+.hr-row:first-child { border-top: 0; }
+.hr-row .who { flex: 1; min-width: 0; display: grid; }
+.hr-row .who b { font-weight: 500; }
+.hr-row .who span { color: var(--muted); font-size: .82rem; }
+.av { width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center; font-weight: 700; color: var(--btn-ink); background: var(--foil); flex: none; }
+.doc-ic { width: 38px; height: 38px; border-radius: 12px; display: grid; place-items: center; background: #fff; border: 1px solid var(--line); flex: none; }
+.cal { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; text-align: center; }
+.cal .h { color: var(--muted); font-size: .75rem; padding-bottom: 4px; }
+.cal .d { position: relative; min-height: 64px; border-radius: 12px; padding: 4px; background: rgb(255 255 255 / 55%); text-align: start; font-size: .8rem; display: grid; align-content: start; gap: 2px; }
+.cal .d.o { opacity: .35; }
+.cal .d.t { box-shadow: 0 0 0 2px rgb(123 85 240 / 45%) inset; }
+.cal .d b { font-weight: 500; font-variant-numeric: tabular-nums; }
+.cal .d i { font-style: normal; font-size: .68rem; line-height: 1.3; border-radius: 6px; padding: 1px 5px; background: var(--sunk); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cal .d i.pay { background: var(--warn-bg); color: var(--warn); }
+.cal .d i.hol { background: var(--good-bg); color: var(--good); }
+.cal .d i.lv { background: var(--info-bg); color: var(--info); }
+.cal .d i.doc { background: var(--bad-bg); color: var(--bad); }
+.cal .d i.ev { background: rgb(123 85 240 / 12%); color: #5b3fd1; }
+@media (max-width: 860px) { .cal .d { min-height: 46px; } .cal .d i { font-size: 0; padding: 0; height: 5px; border-radius: 3px; } }
+.roster { overflow-x: auto; }
+.roster table td, .roster table th { text-align: center; }
+.roster table td:first-child, .roster table th:first-child { text-align: start; }
+.roster select { min-height: 34px; padding: 4px 8px; font-size: .82rem; width: auto; min-width: 110px; }
+.roster td.off { color: var(--muted); }
+.ladder { display: grid; gap: 8px; counter-reset: step; }
+.ladder > div { display: grid; grid-template-columns: 34px 1fr auto; gap: 10px; align-items: center; padding: 10px 12px; border-radius: 14px; background: var(--sunk); }
+.ladder > div::before { counter-increment: step; content: counter(step); width: 28px; height: 28px; border-radius: 50%; background: var(--foil); display: grid; place-items: center; font-weight: 700; font-size: .85rem; color: var(--btn-ink); }
+.money-split { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; }
+.money-split > div { padding: 10px 12px; border-radius: 12px; background: var(--sunk); display: grid; }
+.money-split span { color: var(--muted); font-size: .8rem; }
+.money-split b { font-size: 1.1rem; font-variant-numeric: tabular-nums; }
+.note-box { padding: 10px 14px; border-radius: 14px; background: var(--info-bg); color: var(--ink-2); font-size: .88rem; }
+.note-box.warn { background: var(--warn-bg); }
+.greet h1 { font-size: 1.45rem; }
+@media (min-width: 861px) { .greet { display: none; } }
