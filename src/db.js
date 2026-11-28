@@ -558,6 +558,89 @@ const MIGRATIONS = [
   `
   UPDATE settings SET value = '28' WHERE key = 'payroll_start_day';
   `,
+  // v15 — HR file (2026-11-28): the employee's record, salary parts, documents with expiry dates,
+  // unpaid leave, overtime pay, custody items, the discipline ladder and calendar events.
+  // Written so it can run again over its own columns (a test rewinds user_version past it).
+  (db) => {
+    const has = (t, c) => db.prepare(`SELECT 1 FROM pragma_table_info('${t}') WHERE name = ?`).get(c);
+    for (const [t, c, def] of [
+      ['users', 'hire_date', "TEXT"],
+      ['users', 'birth_date', "TEXT"],
+      ['users', 'national_id', "TEXT NOT NULL DEFAULT ''"],
+      ['users', 'nationality', "TEXT NOT NULL DEFAULT ''"],
+      ['users', 'saudi', "INTEGER NOT NULL DEFAULT 0"],
+      ['users', 'job_title', "TEXT NOT NULL DEFAULT ''"],
+      ['users', 'contract_type', "TEXT NOT NULL DEFAULT ''"],
+      ['users', 'contract_end', "TEXT"],
+      ['users', 'iban', "TEXT NOT NULL DEFAULT ''"],
+      ['users', 'emergency', "TEXT NOT NULL DEFAULT ''"],
+      ['users', 'basic', "REAL"],
+      ['users', 'housing', "REAL NOT NULL DEFAULT 0"],
+      ['users', 'transport', "REAL NOT NULL DEFAULT 0"],
+      ['users', 'gosi', "INTEGER NOT NULL DEFAULT 0"],
+      ['excuses', 'unpaid', "INTEGER NOT NULL DEFAULT 0"]
+    ]) if (!has(t, c)) db.exec(`ALTER TABLE ${t} ADD COLUMN ${c} ${def}`);
+    db.exec(`  CREATE TABLE IF NOT EXISTS documents (
+    id INTEGER PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    number TEXT NOT NULL DEFAULT '',
+    expires_on TEXT,
+    file TEXT,
+    note TEXT NOT NULL DEFAULT '',
+    created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS documents_user ON documents(user_id);
+  CREATE INDEX IF NOT EXISTS documents_expiry ON documents(expires_on);
+  CREATE TABLE IF NOT EXISTS overtime (
+    id INTEGER PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    date TEXT NOT NULL,
+    minutes INTEGER NOT NULL CHECK (minutes > 0),
+    amount REAL NOT NULL CHECK (amount >= 0),
+    note TEXT NOT NULL DEFAULT '',
+    created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS overtime_user_date ON overtime(user_id, date);
+  CREATE TABLE IF NOT EXISTS custody (
+    id INTEGER PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    item TEXT NOT NULL,
+    serial TEXT NOT NULL DEFAULT '',
+    value REAL NOT NULL DEFAULT 0,
+    given_on TEXT NOT NULL,
+    returned_on TEXT,
+    note TEXT NOT NULL DEFAULT '',
+    created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS custody_user ON custody(user_id);
+  CREATE TABLE IF NOT EXISTS discipline (
+    id INTEGER PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    date TEXT NOT NULL,
+    violation TEXT NOT NULL,
+    step INTEGER NOT NULL,
+    action TEXT NOT NULL,
+    amount REAL NOT NULL DEFAULT 0,
+    deduction_id INTEGER REFERENCES deductions(id) ON DELETE SET NULL,
+    note TEXT NOT NULL DEFAULT '',
+    created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS discipline_user ON discipline(user_id, date);
+  CREATE TABLE IF NOT EXISTS events (
+    id INTEGER PRIMARY KEY,
+    date TEXT NOT NULL,
+    title TEXT NOT NULL,
+    created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS events_date ON events(date);
+    `);
+  },
 ];
 
 export function openDb(path) {
@@ -568,7 +651,7 @@ export function openDb(path) {
   for (let v = version; v < MIGRATIONS.length; v++) {
     db.exec('BEGIN');
     try {
-      db.exec(MIGRATIONS[v]);
+      if (typeof MIGRATIONS[v] === 'function') MIGRATIONS[v](db); else db.exec(MIGRATIONS[v]);
       db.exec(`PRAGMA user_version = ${v + 1}`);
       db.exec('COMMIT');
     } catch (e) {

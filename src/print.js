@@ -116,6 +116,8 @@ export function renderPayslip({ month, period = null, row: r, closed, deductions
   <tr><td>الراتب الأساسي</td><td>${sar(r.salary)}</td></tr>
   ${hide ? '' : `<tr><td>الخصومات المعتمدة</td><td>− ${sar(r.deductions)}</td></tr>`}
   <tr><td>أقساط السلف</td><td>− ${sar(r.repayments)}</td></tr>
+  ${r.overtimePay ? `<tr><td>العمل الإضافي</td><td>+ ${sar(r.overtimePay)}</td></tr>` : ''}
+  ${r.unpaidLeave ? `<tr><td>إجازة بدون راتب (${r.unpaidDays} يوم)</td><td>− ${sar(r.unpaidLeave)}</td></tr>` : ''}
   <tr class="total"><td>صافي الراتب</td><td>${sar(r.net)}</td></tr>
 </tbody></table></div>
 <p class="note">المتبقي من السلف بعد هذا الشهر: <b>${sar(r.debtBalance)}</b></p>

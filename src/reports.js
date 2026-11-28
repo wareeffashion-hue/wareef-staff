@@ -97,16 +97,23 @@ export function payroll(db, month, now = Date.now()) {
   const bal = new Map(debtBalances(db, to).map((b) => [b.user_id, b.balance]));
   const dMap = new Map(ded.map((r) => [r.user_id, r.s]));
   const rMap = new Map(rep.map((r) => [r.user_id, r.s]));
+  // HR file: leave recorded as unpaid takes a day's pay (salary ÷ 30) per day; approved overtime is added
+  const unpaid = new Map(db.prepare('SELECT user_id, COUNT(*) n FROM excuses WHERE unpaid = 1 AND user_id IS NOT NULL AND date BETWEEN ? AND ? GROUP BY user_id').all(from, to).map((r) => [r.user_id, r.n]));
+  const ot = new Map(db.prepare('SELECT user_id, SUM(amount) s, SUM(minutes) m FROM overtime WHERE date BETWEEN ? AND ? GROUP BY user_id').all(from, to).map((r) => [r.user_id, r]));
   return users.map((u) => {
     const a = att.find((x) => x.userId === u.id) || {};
     const deductions = round2(dMap.get(u.id) || 0);
     const repayments = round2(rMap.get(u.id) || 0);
+    const unpaidDays = unpaid.get(u.id) || 0;
+    const unpaidLeave = round2(unpaidDays * (u.salary / 30));
+    const overtimePay = round2(ot.get(u.id)?.s || 0);
     return {
       userId: u.id, name: u.name, salary: u.salary,
       workDays: a.workDays || 0, presentDays: a.presentDays || 0, absentDays: a.absentDays || 0, lateDays: a.lateDays || 0,
       lateMinutes: a.lateMinutes || 0, earlyMinutes: a.earlyMinutes || 0, exitMinutes: a.exitMinutes || 0, overtimeMinutes: a.overtimeMinutes || 0,
       suggested: a.suggested || 0, deductions, repayments, debtBalance: bal.get(u.id) || 0,
-      net: round2(u.salary - deductions - repayments),
+      unpaidDays, unpaidLeave, overtimePay, overtimeApproved: ot.get(u.id)?.m || 0,
+      net: round2(u.salary - deductions - repayments - unpaidLeave + overtimePay),
     };
   });
 }

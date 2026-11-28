@@ -1,6 +1,7 @@
 // Wareef staff app: one file, no build step. Hash routes, server-rendered data via JSON API.
 import { startInk } from './ink.js';
 import { mountAdditions, addNav, askReason, withSelfie } from './additions.js';
+import { mountHr, hrNav } from './hr.js';
 
 // ------------------------------------------------------------------ helpers
 const $ = (s, el = document) => el.querySelector(s);
@@ -157,6 +158,8 @@ function modal(title, html, mount) {
 }
 
 const ICONS = {
+  finger: '<path d="M8 11a4 4 0 0 1 8 0v3M12 11v6M6 14a6 6 0 0 0 1 4M18 14c0 2-.5 4-2 6M9.5 21c-.8-1.2-1.5-3-1.5-5"/><path d="M5 9a7 7 0 0 1 14 0"/>',
+  grid: '<rect x="4" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.5"/>',
   home: '<path d="M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/>',
   clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
   cal: '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/>',
@@ -320,7 +323,7 @@ function forgotPassword(username = '') {
   });
 }
 
-const navItems = () => addNav(baseNavItems());
+const navItems = () => hrNav(addNav(baseNavItems()));
 function baseNavItems() {
   if (ME.role === 'admin') {
     return [
@@ -345,11 +348,44 @@ function baseNavItems() {
   ];
 }
 
+/** The menu as a few groups: one icon each in the rail, the group's pages as tabs above the page. */
+const GROUPS = [
+  ['home', 'الرئيسية', 'home', ['today', 'dashboard', 'analytics', 'performance']],
+  ['att', 'الحضور', 'clock', ['attendance', 'mine', 'leaves', 'roster', 'shifts', 'cases', 'flags']],
+  ['approvals', 'الاعتمادات', 'check', ['approvals']],
+  ['pay', 'الرواتب', 'wallet', ['payroll', 'money', 'overtime', 'eos', 'finance', 'record']],
+  ['team', 'الفريق', 'users', ['staff', 'profile', 'documents', 'custody', 'discipline', 'decisions', 'calendar']],
+  ['ops', 'العمليات', 'box', ['ops', 'scan', 'exchanges', 'requests', 'shortages']],
+  ['comm', 'التواصل', 'chat', ['tickets', 'broadcast']],
+  ['reports', 'التقارير', 'file', ['reports', 'changes']],
+  ['settings', 'الإعدادات', 'gear', ['settings', 'notifications']],
+];
+function navGroups(items) {
+  const has = new Map(items.map((it) => [it[0], it]));
+  const used = new Set(['account']);
+  const out = [];
+  for (const [key, label, ic, keys] of GROUPS) {
+    const list = keys.filter((k) => has.has(k) && !used.has(k)).map((k) => { used.add(k); return has.get(k); });
+    if (list.length) out.push({ key, label: list.length === 1 && list[0][1].length <= 10 ? list[0][1] : label, icon: list.length === 1 ? list[0][2] : ic, items: list });
+  }
+  const me = [...items.filter(([k]) => !used.has(k)), ['account', 'حسابي', 'user']];
+  // everyone's account page sits with the owner's settings, or on its own for the team
+  const st = out.find((x) => x.key === 'settings');
+  if (st) { st.items.push(...me); st.label = 'الإعدادات'; st.icon = 'gear'; } else out.push({ key: 'me', label: 'حسابي', icon: 'user', items: me });
+  return out;
+}
+function moreSheet(groups) {
+  const d = modal('كل الصفحات', `<div class="more-grid">${groups.map((x) => `<section><h3>${icon(x.icon)}<span>${esc(x.label)}</span></h3>${x.items.map(([k, label, ic]) => `<a href="#/${k}">${icon(ic)}<span>${esc(label)}</span></a>`).join('')}</section>`).join('')}</div>`);
+  d.classList.add('sheet');
+  d.addEventListener('click', (e) => { if (e.target.closest('a[href^="#/"]')) d.close(); });
+}
+
 const PAGES = {};
 // The shell (rail, tab bar, phone header) is built once and kept; moving between pages only
 // swaps the content, so the nav highlight can glide and the content can cross-fade.
 let CUR = null; // page on screen
 let ENTER = null; // set by route() for a real page change; the next render() plays the entrance
+let SUBNAV = ''; // the sibling pages of the current group, shown above the page
 function route() {
   const items = navItems();
   const key = location.hash.replace(/^#\/?/, '').split('?')[0] || items[0][0];
@@ -360,21 +396,33 @@ function route() {
   NAV++;
   $$('dialog[open]').forEach((d) => d.close());
   const sig = `${ME.id}|${items.map(([k]) => k).join(',')}`;
+  const groups = navGroups(items);
+  const g = groups.find((x) => x.items.some(([k]) => k === page)) || groups[0];
   let shell = $('.shell');
   if (!shell || shell.dataset.sig !== sig) {
+    const gLink = (x) => `<a href="#/${x.items[0][0]}" data-g="${x.key}" title="${esc(x.label)}">${icon(x.icon)}<span>${esc(x.label)}</span></a>`;
+    // phone: four groups around a raised centre button (the punch, or the day board for the owner)
+    const fabKey = items.some(([k]) => k === 'today') ? 'today' : items[0][0];
+    const rest = groups.filter((x) => !(x.items.length === 1 && x.items[0][0] === fabKey));
+    const tabs = rest.length > 4 ? [...rest.slice(0, 3), { key: 'more' }] : rest;
+    const tabLink = (x) => (x.key === 'more' ? `<a href="#" data-more title="المزيد">${icon('grid')}<span>المزيد</span></a>` : gLink(x));
+    const mid = Math.min(2, tabs.length);
     app.innerHTML = `<div class="shell" data-sig="${esc(sig)}">
+    <i class="sig-bg" aria-hidden="true"></i>
     <nav class="rail" aria-label="القائمة"><span class="nav-ink" aria-hidden="true"></span>
-      <div class="brand"><img src="/img/logo-mark.png" alt="وريف"><span>${esc(ME.name)}${ME.name === 'المدير' ? '' : `<br>${ME.role === 'admin' ? 'المدير' : ME.manager ? 'مشرف' : 'موظف'}`}</span></div>
-      ${items.map(([k, label, ic]) => `<a href="#/${k}" data-k="${k}">${icon(ic)}<span>${label}</span></a>`).join('')}
-      <div class="foot">${ME.role === 'admin' ? `<a href="#/account" data-k="account">${icon('user')}<span>حسابي</span></a>` : ''}<a href="#" id="logout">${icon('out')}<span>تسجيل الخروج</span></a></div>
+      <div class="brand"><img src="/img/logo-mark.png" alt="وريف"></div>
+      ${groups.filter((x) => x.key !== 'settings').map(gLink).join('')}
+      <div class="foot">${groups.filter((x) => x.key === 'settings').map(gLink).join('')}<a href="#" id="logout" title="تسجيل الخروج">${icon('out')}<span>خروج</span></a></div>
     </nav>
     <main class="main" id="page"><div class="mobile-head"><img src="/img/logo-mark.png" alt="وريف"><div class="mh-tools"><a href="#/account" class="mh-me">${icon('user')}${esc(ME.name)}</a><button type="button" class="mh-out" data-logout aria-label="تسجيل الخروج" title="تسجيل الخروج">${icon('out')}</button></div></div>
       <div class="skel" aria-label="جاري التحميل"><i></i><i></i><i></i></div></main>
-    <nav class="tabbar" aria-label="القائمة"><span class="nav-ink" aria-hidden="true"></span>${items.map(([k, label, ic]) => `<a href="#/${k}" data-k="${k}">${icon(ic)}<span>${label}</span></a>`).join('')}</nav>
+    <nav class="tabbar" aria-label="القائمة"><span class="nav-ink" aria-hidden="true"></span>${tabs.slice(0, mid).map(tabLink).join('')}<a href="#/${fabKey}" class="fab" data-fab="${fabKey}" title="${fabKey === 'today' ? 'البصمة' : 'لوحة اليوم'}">${icon(fabKey === 'today' ? 'finger' : 'home')}</a>${tabs.slice(mid).map(tabLink).join('')}</nav>
     <div class="loadbar" aria-hidden="true"></div>
   </div>`;
     shell = $('.shell');
     $('#logout').onclick = (e) => { e.preventDefault(); logout(); };
+    const more = $('[data-more]', shell);
+    if (more) more.onclick = (e) => { e.preventDefault(); moreSheet(groups); };
     CUR = null;
   }
   const moved = CUR !== page;
@@ -382,7 +430,14 @@ function route() {
   ENTER = moved ? { dir: CUR && order(page) < order(CUR) ? -1 : 1, first: !CUR } : null;
   const prev = CUR;
   CUR = page;
-  $$('.rail a[data-k], .tabbar a[data-k]', shell).forEach((a) => { const on = a.dataset.k === page; a.classList.toggle('on', on); if (on) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); });
+  SUBNAV = g && g.items.length > 1 ? `<nav class="subnav" aria-label="${esc(g.label)}">${g.items.map(([k, label, ic]) => `<a href="#/${k}" class="${k === page ? 'on' : ''}" ${k === page ? 'aria-current="page"' : ''}>${icon(ic)}<span>${esc(label)}</span></a>`).join('')}</nav>` : '';
+  const fab = $('.tabbar .fab', shell);
+  const onTab = $$('.tabbar a[data-g]', shell).some((a) => a.dataset.g === g?.key);
+  const mark = (a, on) => { a.classList.toggle('on', on); if (on) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); };
+  $$('.rail a[data-g], .tabbar a[data-g]', shell).forEach((a) => mark(a, a.dataset.g === g?.key && !(fab && fab.dataset.fab === page && a.closest('.tabbar'))));
+  if (fab) mark(fab, fab.dataset.fab === page);
+  const more = $('.tabbar [data-more]', shell);
+  if (more) mark(more, !onTab && !(fab && fab.dataset.fab === page));
   placeInk(!prev);
   if (moved && prev) {
     // the old page drifts out while the new one loads
@@ -429,7 +484,9 @@ function render(html) {
   const main = $('#page');
   if (!main) { const off = document.createElement('div'); off.innerHTML = html; return off; } // signed out meanwhile
   const head = $('.mobile-head').outerHTML;
-  main.innerHTML = head + html;
+  main.innerHTML = head + SUBNAV + html;
+  const onTab = SUBNAV && $('.subnav a.on', main);
+  if (onTab) onTab.parentElement.scrollLeft = onTab.offsetLeft - (onTab.parentElement.clientWidth - onTab.offsetWidth) / 2;
   main.classList.remove('leaving');
   $('.shell')?.classList.remove('loading');
   if (ENTER) {
@@ -511,6 +568,7 @@ function rollNumbers(root) {
   requestAnimationFrame(step);
 }
 const refresh = () => route();
+const hello = () => { const h = +localIso(nowMs()).slice(11, 13); return h < 12 ? 'صباح الخير' : 'مساء الخير'; };
 
 // ------------------------------------------------------------------ employee: punch screen
 PAGES.today = async () => {
@@ -526,6 +584,7 @@ PAGES.today = async () => {
       out: '<button class="btn ghost" data-p="out">تسجيل انصراف</button>',
     };
     const pg = render(`
+      <div class="greet"><h1>${hello()} ${esc(ME.name.split(' ')[0])}<i class="sig-mark" aria-hidden="true"></i></h1><i class="hair"></i></div>
       <section class="panel punch">
         <div class="clock" id="clock">--:--:--</div>
         <p class="muted">${fmtDate(data.date)}</p>
@@ -1039,8 +1098,8 @@ PAGES.attendance = async () => {
         <label class="f" id="ex-user-l">الموظف<select name="user_id" id="ex-user">${staffOptions(staff, '', 'اختر الموظف')}</select></label>
         <label class="f">من<input type="date" name="from" id="ex-from" value="${today()}" required></label>
         <label class="f">إلى<input type="date" name="to" id="ex-to" value="${today()}" required></label>
-      </div><div class="row"><label class="f">ملاحظة<input name="note" id="ex-note"></label><button class="btn" type="submit" style="flex:0 0 auto">حفظ</button></div></form>
-      ${table(['التاريخ', 'الموظف', 'النوع', 'ملاحظة', ''], ex.excuses.map((e) => `<tr><td>${fmtDate(e.date)}</td><td>${esc(e.user_name || 'الجميع')}</td><td>${EXC[e.kind]}</td><td class="wrap">${esc(e.note)}</td><td><button class="link bad" data-ex="${e.id}">حذف</button></td></tr>`), { empty: 'لا توجد إجازات أو أعذار مسجّلة' })}
+      </div><div class="row"><label class="f">ملاحظة<input name="note" id="ex-note"></label>${ME.role === 'admin' ? '<label class="check" style="flex:0 0 auto"><input type="checkbox" name="unpaid"> إجازة بدون راتب (تنخصم من المسيّر)</label>' : ''}<button class="btn" type="submit" style="flex:0 0 auto">حفظ</button></div></form>
+      ${table(['التاريخ', 'الموظف', 'النوع', 'ملاحظة', ''], ex.excuses.map((e) => `<tr><td>${fmtDate(e.date)}</td><td>${esc(e.user_name || 'الجميع')}</td><td>${EXC[e.kind]}${e.unpaid ? ` ${pill('بدون راتب', 'warn')}` : ''}</td><td class="wrap">${esc(e.note)}</td><td><button class="link bad" data-ex="${e.id}">حذف</button></td></tr>`), { empty: 'لا توجد إجازات أو أعذار مسجّلة' })}
     </section>`);
   $('#flt', pg).onchange = (e) => { sessionStorage.setItem('att', JSON.stringify(formData(e.currentTarget))); refresh(); };
   $$('tr[data-u]', pg).forEach((tr) => { tr.onclick = () => dayDetail(+tr.dataset.u, tr.dataset.n, tr.dataset.d).catch((e) => toast(e.message, true)); });
@@ -1058,7 +1117,8 @@ PAGES.payroll = async () => {
   const picked = sessionStorage.getItem('pay-month');
   const d = await api(`/api/payroll${picked ? `?month=${picked}` : ''}`);
   const month = d.month;
-  const sum = (k) => d.rows.reduce((t, r) => t + r[k], 0);
+  const sum = (k) => d.rows.reduce((t, r) => t + (r[k] || 0), 0);
+  const hrCols = d.rows.some((r) => r.overtimePay || r.unpaidLeave);
   const pg = render(`
     <div class="topline"><h1>مسيّر الرواتب</h1><div class="tools"><input type="month" id="pm" value="${month}" aria-label="الشهر">
       <a class="btn ghost" href="/api/export/payroll?month=${month}">${icon('down')}تصدير Excel</a>
@@ -1071,12 +1131,12 @@ PAGES.payroll = async () => {
       <p class="muted small">فترة مسيّر ${esc(month)}: من <b>${esc(d.period.from)}</b> إلى <b>${esc(d.period.to)}</b>. يوم بداية الشهر يتغيّر من «الإعدادات ← إعدادات الإضافات».</p>
     </section>
     <section class="panel">
-      ${table(['الموظف', 'الراتب', 'حضور', 'غياب', 'أيام تأخير', 'دقائق التأخير', 'خروج', 'الخصم المقترح', 'الخصومات المعتمدة', 'أقساط السلف', 'الصافي', 'متبقي السلف', ''],
+      ${table(['الموظف', 'الراتب', 'حضور', 'غياب', 'أيام تأخير', 'دقائق التأخير', 'خروج', 'الخصم المقترح', 'الخصومات المعتمدة', 'أقساط السلف', ...(hrCols ? ['إضافي', 'بدون راتب'] : []), 'الصافي', 'متبقي السلف', ''],
         d.rows.map((r) => `<tr><td><b>${esc(r.name)}</b></td><td>${money(r.salary)}</td><td>${r.presentDays}/${r.workDays}</td><td>${r.absentDays ? pill(r.absentDays, 'bad') : 0}</td><td>${r.lateDays}</td><td>${mn(r.lateMinutes)}</td><td>${mn(r.exitMinutes + r.earlyMinutes)}</td>
-          <td>${money(r.suggested)}</td><td>${money(r.deductions)}</td><td>${money(r.repayments)}</td><td><b>${money(r.net)}</b></td><td>${money(r.debtBalance)}</td>
+          <td>${money(r.suggested)}</td><td>${money(r.deductions)}</td><td>${money(r.repayments)}</td>${hrCols ? `<td>${r.overtimePay ? `+${money(r.overtimePay)}` : '—'}</td><td>${r.unpaidLeave ? `−${money(r.unpaidLeave)}` : '—'}</td>` : ''}<td><b>${money(r.net)}</b></td><td>${money(r.debtBalance)}</td>
           <td class="nowrap">${d.closed ? '' : `<button class="btn sm ghost" data-ded="${r.userId}" data-amt="${Math.max(0, Math.round((r.suggested - r.deductions) * 100) / 100)}">خصم</button> `}<a class="link" href="/payslip?month=${month}&user_id=${r.userId}" target="_blank" rel="noopener">القسيمة</a></td></tr>`),
-        { foot: ['الإجمالي', money(sum('salary')), '', '', '', '', '', money(sum('suggested')), money(sum('deductions')), money(sum('repayments')), money(sum('net')), money(sum('debtBalance')), ''] })}
-      <p class="muted small">الصافي = الراتب − الخصومات المعتمدة − أقساط السلف المخصومة من الراتب. الخصم المقترح للاسترشاد فقط ولا يدخل في الصافي حتى تعتمده. ${!d.rows.some((r) => r.salary) ? '<b>أدخل رواتب الموظفين من صفحة الموظفين ليظهر الخصم المقترح.</b>' : ''}</p>
+        { foot: ['الإجمالي', money(sum('salary')), '', '', '', '', '', money(sum('suggested')), money(sum('deductions')), money(sum('repayments')), ...(hrCols ? [money(sum('overtimePay')), money(sum('unpaidLeave'))] : []), money(sum('net')), money(sum('debtBalance')), ''] })}
+      <p class="muted small">الصافي = الراتب − الخصومات المعتمدة − أقساط السلف المخصومة من الراتب${hrCols ? ' + العمل الإضافي المعتمد − أيام الإجازة بدون راتب' : ''}. الخصم المقترح للاسترشاد فقط ولا يدخل في الصافي حتى تعتمده. ${!d.rows.some((r) => r.salary) ? '<b>أدخل رواتب الموظفين من صفحة الموظفين ليظهر الخصم المقترح.</b>' : ''}</p>
     </section>`);
   $('#pm', pg).onchange = (e) => { sessionStorage.setItem('pay-month', e.target.value || thisMonth()); refresh(); };
   $$('[data-ded]', pg).forEach((b) => { b.onclick = () => deductionModal(+b.dataset.ded, b.dataset.amt); });
@@ -2086,6 +2146,10 @@ PAGES.scan = async () => {
 startInk();
 mountAdditions({
   $, $$, esc, api, act, toast, modal, render, refresh, PAGES, pill, statusPill, table, opt, icon, ICONS, fmtDate, fmtT, localIso, today, int, money, mn, formData, DED,
+  me: () => ME,
+});
+mountHr({
+  $, $$, esc, api, act, toast, modal, render, refresh, PAGES, pill, table, opt, icon, ICONS, fmtDate, today, int, money, mn, formData,
   me: () => ME,
 });
 boot();
