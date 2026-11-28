@@ -95,7 +95,7 @@ test('a manual punch that does not fix the checkout leaves the case open', async
   assert.equal(cases('monther')[0].status, 'pending');
 });
 
-test('lateness and early leave are 3 times their value by default; exits and absence are not', async () => {
+test('lateness, early leave and exits are 3 times their value by default; absence is not', async () => {
   const SAT = '2026-10-03';
   const periods = [{ id: 'am', name: 'ص', start: '07:00', end: '12:20' }, { id: 'pm', name: 'م', start: '13:00', end: '21:00' }];
   const p = (t, type) => ({ ts: at(SAT, t), type });
@@ -104,6 +104,8 @@ test('lateness and early leave are 3 times their value by default; exits and abs
   assert.equal(computeDay({ ...base, multiplier: 3 }).suggested, 30);
   // early leave priced from the basic salary is multiplied: 60 minutes of a 800-minute day = 7.5 → 22.5
   assert.equal(computeDay({ ...base, punches: [p('07:00', 'in'), p('12:20', 'out'), p('13:00', 'in'), p('20:00', 'out')], multiplier: 3 }).suggested, 22.5);
+  // an exit during work too: 60 minutes out = 7.5 → 22.5
+  assert.equal(computeDay({ ...base, punches: [p('07:00', 'in'), p('12:20', 'out'), p('13:00', 'in'), p('15:00', 'leave'), p('16:00', 'back'), p('21:00', 'out')], multiplier: 3 }).suggested, 22.5);
   // absence is not: a day = a day's basic wage (3000 / 30 = 100)
   assert.equal(computeDay({ ...base, punches: [], multiplier: 3 }).suggested, 100);
   const s = await admin('GET', '/api/settings');
