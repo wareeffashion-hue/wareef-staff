@@ -116,6 +116,10 @@ export function decideDeduction(db, user, id, body) {
   if (!status) throw new HttpError(400, 'اختر اعتماد أو رفض');
   const response = text(body.response, 300);
   if (status === 'rejected' && !response) throw new HttpError(400, 'اكتب سبب الرفض');
+  // the approver may change the amount the recorder raised before approving it
+  const recorded = r.amount;
+  if (status === 'approved' && body.amount !== undefined && body.amount !== null && body.amount !== '') r.amount = num(body.amount, 0.01, 1e6);
+  const changed = r.amount !== recorded;
   const recorder = db.prepare('SELECT name FROM users WHERE id = ?').get(r.created_by)?.name || '';
   tx(db, () => {
     let dedId = null;
@@ -123,11 +127,12 @@ export function decideDeduction(db, user, id, body) {
       assertOpen(db, r.date);
       dedId = Number(db.prepare('INSERT INTO deductions (user_id, date, amount, category, reason, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
         .run(r.user_id, r.date, r.amount, r.category, r.reason, user.id, Date.now()).lastInsertRowid);
-      audit(db, user.id, 'deduction.add', r.user_id, { date: r.date, amount: r.amount, category: r.category, reason: r.reason, request: r.id });
+      audit(db, user.id, 'deduction.add', r.user_id, { date: r.date, amount: r.amount, category: r.category, reason: r.reason, request: r.id, ...(changed ? { recorded } : {}) });
+      if (changed) logChange(db, { actor: user, area: 'salary', action: 'تعديل مبلغ خصم مسجّل قبل اعتماده', target: r.user_id, ref: `${r.date} · سجّله ${recorder}`, before: `${recorded} ر.س`, after: `${r.amount} ر.س`, reason: response || r.reason });
       logChange(db, { actor: user, area: 'salary', action: 'اعتماد خصم مسجّل', target: r.user_id, ref: `${r.date} · سجّله ${recorder}`, before: 'بانتظار الاعتماد', after: `${r.amount} ر.س · ${DEDUCTION_LABELS[r.category]}`, reason: r.reason });
     }
-    db.prepare('UPDATE deduction_requests SET status = ?, decided_by = ?, decided_at = ?, response = ?, deduction_id = ? WHERE id = ?')
-      .run(status, user.id, Date.now(), response, dedId, r.id);
+    db.prepare('UPDATE deduction_requests SET status = ?, decided_by = ?, decided_at = ?, response = ?, deduction_id = ?, amount = ? WHERE id = ?')
+      .run(status, user.id, Date.now(), response, dedId, r.amount, r.id);
   });
   if (status === 'approved') {
     toUser(db, r.user_id, 'deduction', deductionNotice(db, { amount: r.amount, date: r.date, category: DEDUCTION_LABELS[r.category], reason: r.reason.slice(0, 200), link: link(db) }), `deduction_request_ok:${r.id}`);

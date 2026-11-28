@@ -3,10 +3,11 @@
 import { audit } from '../db.js';
 import { HttpError } from '../http.js';
 import { getSettings } from '../settings.js';
-import { addDays, localDate, monthBounds, weekday } from '../time.js';
+import { addDays, localDate, weekday } from '../time.js';
 import { exceptionOf, loadAttendance, loadExceptions, periodsFor, summarize } from '../attendance.js';
 import { managerPunch } from '../punch.js';
 import { payrollFor } from '../monthly.js';
+import { payMonthOf, payPeriod } from '../payperiod.js';
 import { debtBalances, deductionRows } from '../reports.js';
 import { link, msg, toSupervisors, toUser } from './alerts.js';
 import { logChange } from './changelog.js';
@@ -22,8 +23,9 @@ export function profile(db, user, { userId = null, month = null } = {}) {
   if (id !== user.id && !isSup(user) && !isFinance(user)) throw new HttpError(403, 'هذه صفحة موظف آخر');
   const u = db.prepare("SELECT id, name, username, role, salary, periods, day_off, phone, created_at FROM users WHERE id = ?").get(id);
   if (!u || u.role !== 'employee') throw new HttpError(404, 'الموظف غير موجود');
-  const m = /^\d{4}-(0[1-9]|1[0-2])$/.test(month || '') ? month : localDate().slice(0, 7);
-  const { from, to } = monthBounds(m);
+  // the month is the payroll month (27th to 26th when set so), for the days as well as the salary
+  const m = /^\d{4}-(0[1-9]|1[0-2])$/.test(month || '') ? month : payMonthOf(db, localDate());
+  const { from, to } = payPeriod(db, m);
   const settings = getSettings(db);
   const today = localDate();
   const days = loadAttendance(db, { from, to: to < today ? to : today, userId: id });

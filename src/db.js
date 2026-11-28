@@ -549,6 +549,11 @@ const MIGRATIONS = [
   ALTER TABLE payroll_closes ADD COLUMN period_from TEXT;
   ALTER TABLE payroll_closes ADD COLUMN period_to TEXT;
   `,
+  // v13 — the owner asked for the payroll month from the 27th to the 27th (2026-11-28): a start day
+  // saved earlier (the old default was the 1st) moves to the 27th; it can still be changed in settings.
+  `
+  UPDATE settings SET value = '27' WHERE key = 'payroll_start_day';
+  `,
 ];
 
 export function openDb(path) {

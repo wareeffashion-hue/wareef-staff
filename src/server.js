@@ -34,6 +34,7 @@ import { registerAdditions, additionJobs } from './additions/index.js';
 import { logChange } from './additions/changelog.js';
 import { deductionNotice } from './additions/alerts.js';
 import { parseSelfie, saveSelfie, suspicionAlert } from './additions/selfie.js';
+import { resolveCasesAfterManagerPunch } from './additions/cases.js';
 import { pushTo, removeSubscription, saveSubscription, vapidKeys } from './push.js';
 import { renderDailyReport, renderMonthlyReport, renderPayslip } from './print.js';
 import * as msg from './messages.js';
@@ -613,7 +614,7 @@ export function createApp(db) {
     requireManager(user);
     const { from, to } = range(url, 7);
     const rows = loadAttendance(db, { from, to, userId: Number(url.searchParams.get('user_id')) || null });
-    return { from, to, lateRate: getSettings(db).late_minutes_per_riyal ?? 3, rows: hideMoney(user, rows), summary: hideMoney(user, summarize(rows)) };
+    return { from, to, lateRate: getSettings(db).late_minutes_per_riyal ?? 3, multiplier: getSettings(db).deduction_multiplier ?? 1, rows: hideMoney(user, rows), summary: hideMoney(user, summarize(rows)) };
   }, { auth: true });
   r.get('/api/punches', ({ url, user }) => {
     requireManager(user);
@@ -628,8 +629,12 @@ export function createApp(db) {
     requireManager(user);
     const b = parseJson(await readBody(req));
     notSelf(user, b.user_id);
-    const id = managerPunch(db, user, b);
-    logChange(db, { actor: user, area: 'attendance', action: 'إضافة بصمة يدوية', target: Number(b.user_id), ref: `${b.date} ${b.time}`, before: '—', after: `${PUNCH_LABEL[b.type] || b.type} ${b.time}`, reason: b.note });
+    const id = tx(db, () => {
+      const pid = managerPunch(db, user, b);
+      logChange(db, { actor: user, area: 'attendance', action: 'إضافة بصمة يدوية', target: Number(b.user_id), ref: `${b.date} ${b.time}`, before: '—', after: `${PUNCH_LABEL[b.type] || b.type} ${b.time}`, reason: b.note });
+      resolveCasesAfterManagerPunch(db, user, Number(b.user_id), b.date);
+      return pid;
+    });
     return { id };
   }, { auth: true });
   r.delete('/api/punches/:id', async ({ req, params, user }) => {

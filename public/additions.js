@@ -385,7 +385,7 @@ function shrink(file, max = 1280) {
 // ------------------------------------------------------------------ the employee's page
 async function profile() {
   const viewer = isSup() || isFinance();
-  const month = sessionStorage.getItem('pf-month') || C.today().slice(0, 7);
+  const month = sessionStorage.getItem('pf-month') || ''; // empty = the current payroll month (server decides)
   let uid = sessionStorage.getItem('pf-user') || '';
   const ppl = viewer ? (await C.api('/api/profile/people')).people : [];
   if (me().role === 'admin' && !uid && ppl.length) uid = String(ppl[0].id);
@@ -451,7 +451,7 @@ async function profile() {
     <section class="panel"><header><h2>أيام ${C.esc(d.month)}</h2></header>
       ${C.table(['اليوم', 'الحالة', 'الحضور', 'الانصراف', 'تأخير', 'خروج'], d.attendance.days.slice().reverse().map((r) => `<tr><td>${C.fmtDate(r.date)}</td><td>${C.statusPill(r.status)}</td><td>${C.fmtT(r.firstIn)}</td><td>${C.fmtT(r.lastOut)}</td><td>${C.mn(r.lateMinutes)}</td><td>${C.mn((r.exitMinutes || 0) + (r.earlyMinutes || 0))}</td></tr>`), { empty: 'لا توجد أيام' })}
     </section>`);
-  C.$('#pf-month', pg).onchange = (e) => { sessionStorage.setItem('pf-month', e.target.value || C.today().slice(0, 7)); C.refresh(); };
+  C.$('#pf-month', pg).onchange = (e) => { sessionStorage.setItem('pf-month', e.target.value || ''); C.refresh(); };
   const sel = C.$('#pf-user', pg);
   if (sel) sel.onchange = () => { sessionStorage.setItem('pf-user', sel.value); C.refresh(); };
   C.$$('[data-ack]', pg).forEach((b) => { b.onclick = async () => { if (await C.act(b, () => C.api(`/api/my/decisions/${b.dataset.ack}/ack`, { method: 'POST' }), 'تم تسجيل إقرارك')) C.refresh(); }; });
@@ -471,10 +471,10 @@ async function approvals() {
         <div class="small">${C.esc(c.reason)}</div><div class="muted small">طُلب ${when(c.created_at)}</div>
         <div class="acts">${c.user_id === me().id && me().role !== 'admin' ? '<span class="muted small">طلبك يعتمده المدير</span>' : `<button class="btn sm" data-cok="${c.id}">اعتماد وإضافة البصمة</button><button class="link bad" data-cno="${c.id}">رفض</button>`}</div></div>`).join('')}</div>` : '<p class="empty">ما في طلبات تصحيح</p>'}
     </section>
-    <section class="panel"><header><h2>خصومات مسجّلة بانتظار الاعتماد</h2><span class="muted small">ما يدخل الخصم في الراتب إلا بعد اعتمادك. ما تعتمد خصماً سجّلته أنت أو عليك</span></header>
+    <section class="panel"><header><h2>خصومات مسجّلة بانتظار الاعتماد</h2><span class="muted small">ما يدخل الخصم في الراتب إلا بعد اعتمادك، وتقدر تعدّل المبلغ قبل الاعتماد. ما تعتمد خصماً سجّلته أنت أو عليك</span></header>
       ${dr.requests.length ? `<div class="list">${dr.requests.map((r) => `<div class="item"><div class="top"><b>${C.esc(r.name)} · ${C.money(r.amount)} ر.س</b><span class="small">${C.esc(dr.labels[r.category] || r.category)} · ${C.fmtDate(r.date)}</span></div>
         <div class="small">${C.esc(r.reason)}</div><div class="muted small">سجّله ${C.esc(r.created_name || '')} ${when(r.created_at)}</div>
-        <div class="acts">${r.created_by === me().id || r.user_id === me().id ? '<span class="muted small">يعتمده مشرف آخر أو المدير</span>' : `<button class="btn sm" data-dok="${r.id}">اعتماد الخصم</button><button class="link bad" data-dno="${r.id}">رفض</button>`}</div></div>`).join('')}</div>` : '<p class="empty">ما في خصومات بانتظار الاعتماد</p>'}
+        <div class="acts">${r.created_by === me().id || r.user_id === me().id ? '<span class="muted small">يعتمده مشرف آخر أو المدير</span>' : `<label class="ad-amt small">المبلغ (ر.س)<input type="number" id="damt-${r.id}" value="${r.amount}" min="0.01" step="0.01" inputmode="decimal" aria-label="مبلغ الخصم قبل الاعتماد"></label><button class="btn sm" data-dok="${r.id}">اعتماد الخصم</button><button class="link bad" data-dno="${r.id}">رفض</button>`}</div></div>`).join('')}</div>` : '<p class="empty">ما في خصومات بانتظار الاعتماد</p>'}
     </section>
     <div class="grid2">
       <section class="panel"><header><h2>تسجيل خصم أو ملاحظة</h2></header>${recordForms(dg.people, dr.labels)}</section>
@@ -489,7 +489,9 @@ async function approvals() {
     const id = Object.values(b.dataset)[0];
     let response = '';
     if (status === 'rejected') { response = prompt('سبب الرفض'); if (!response) return; }
-    if (await C.act(b, () => C.api(`${url}/${id}`, { method: 'PUT', body: { status, response } }), ok)) C.refresh();
+    const amt = b.dataset.dok ? C.$(`#damt-${id}`, pg) : null; // the amount can be changed before approving
+    const body = { status, response, ...(amt ? { amount: amt.value } : {}) };
+    if (await C.act(b, () => C.api(`${url}/${id}`, { method: 'PUT', body }), ok)) C.refresh();
   }; });
   decide('[data-cok]', '/api/corrections', 'approved', 'اعتُمد وأُضيفت البصمة');
   decide('[data-cno]', '/api/corrections', 'rejected', 'رُفض الطلب');
@@ -585,7 +587,7 @@ async function cases() {
       <div class="seg" role="tablist">${[['pending', 'بانتظار المراجعة'], ['done', 'تمت مراجعتها']].map(([k, l]) => `<button type="button" data-st="${k}" class="${k === status ? 'on' : ''}">${l}</button>`).join('')}</div></div></div>
     <div class="kpis"><div class="kpi ${d.counts.missing ? 'warn' : ''}"><b>${C.int(d.counts.missing)}</b><span>لم يسجّل انصراف</span></div>
       <div class="kpi ${d.counts.exits ? 'warn' : ''}"><b>${C.int(d.counts.exits)}</b><span>خروج بدون إذن</span></div></div>
-    <section class="panel"><header><h2>${status === 'pending' ? 'بانتظار قرارك' : 'آخر الحالات'}</h2><span class="muted small">عدم تسجيل الانصراف: الاعتماد يحسب الفترة غياب. الخروج بدون إذن: الاعتماد يسجّل الخصم (ريال لكل ${d.lateRate} دقائق)</span></header>
+    <section class="panel"><header><h2>${status === 'pending' ? 'بانتظار قرارك' : 'آخر الحالات'}</h2><span class="muted small">عدم تسجيل الانصراف: الاعتماد يحسب الفترة غياب. الخروج بدون إذن: الاعتماد يسجّل الخصم (ريال لكل ${d.lateRate} دقائق، × ${d.multiplier || 1})</span></header>
       ${d.cases.length ? `<div class="list">${d.cases.map((c) => `<div class="item"><div class="top"><b>${C.esc(c.name)} · ${C.esc(d.kinds[c.kind])}</b>${P(CS, c.status)}</div>
         <div class="small">${C.fmtDate(c.date)} · ${range(c)}</div>
         ${c.kind === 'unauthorized_exit' ? `<div class="small">الخصم ${c.status === 'pending' ? 'المقترح' : ''}: <b>${C.money(c.amount)} ر.س</b></div>` : ''}

@@ -45,6 +45,7 @@ export const exceptionOf = (map, userId, date) => map.get(`${userId}|${date}`) |
  * @param {number} o.maxExit         minutes a temporary exit may last before it's flagged
  * @param {number} o.salary          monthly salary, for the suggested deduction
  * @param {number} o.lateRate        minutes of lateness per riyal of fine (0 = priced by salary)
+ * @param {number} o.multiplier      the suggested deduction is this many times the value of the missing time (owner: 3)
  * @param {number} o.now             epoch ms
  * @param {object} o.reviews         period id → 'pending' | 'approved': a missing checkout under review, or confirmed as absence
  */
@@ -62,7 +63,7 @@ function merge(list) {
  * `permits` are approved hourly permissions ([start, end] epoch ms): time inside them counts as
  * covered for lateness, early leave, exits and absence, but not as time worked.
  */
-export function computeDay({ date, punches, periods, excuse = null, grace = 0, maxExit = 30, salary = 0, lateRate = 0, now = Date.now(), permits = [], reviews = {} }) {
+export function computeDay({ date, punches, periods, excuse = null, grace = 0, maxExit = 30, salary = 0, lateRate = 0, multiplier = 1, now = Date.now(), permits = [], reviews = {} }) {
   const sorted = [...punches].sort((a, b) => a.ts - b.ts);
   const flags = new Set();
   const intervals = []; // [start, end] while present
@@ -179,14 +180,18 @@ export function computeDay({ date, punches, periods, excuse = null, grace = 0, m
   else if (res.lateMinutes > 0) res.status = 'late';
   if (out.some((p) => p.review === 'pending')) res.status = 'review';
 
-  // Lateness has a flat fine (a riyal per few minutes); other missing time is priced from the salary.
+  // Lateness has a flat fine (a riyal per few minutes); other missing time is priced from the (basic)
+  // salary. The whole is then multiplied (the owner's rule: a deduction is 3 times its value).
   const perMinute = salary > 0 && scheduledMinutes > 0 ? salary / 30 / scheduledMinutes : 0;
   const live = out.filter((p) => p.state === 'not_arrived').reduce((t, p) => t + p.late, 0);
   const late = res.lateMinutes - live;
   const lateFine = lateRate > 0 ? late / lateRate : perMinute * late;
-  res.suggested = round2(lateFine + perMinute * (res.earlyMinutes + res.exitMinutes + res.absentMinutes));
+  res.suggested = round2(deductionMultiplier(multiplier) * (lateFine + perMinute * (res.earlyMinutes + res.exitMinutes + res.absentMinutes)));
   return res;
 }
+
+/** The setting as a usable factor (1 when unset or invalid). */
+export const deductionMultiplier = (m) => (Number.isFinite(+m) && +m >= 1 ? +m : 1);
 
 /** Presence before the first period or after the last one (breaks between periods don't count). */
 function overtime(intervals, periods, date) {
@@ -245,6 +250,7 @@ export function loadAttendance(db, { from, to, userId = null, now = Date.now() }
         maxExit: settings.max_exit_minutes,
         salary: u.salary,
         lateRate: settings.late_minutes_per_riyal ?? 3,
+        multiplier: settings.deduction_multiplier,
         now,
         permits: permitsOf.get(`${u.id}|${date}`) || [],
         reviews: reviewsOf.get(`${u.id}|${date}`) || {},

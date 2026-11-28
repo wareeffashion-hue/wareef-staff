@@ -23,6 +23,7 @@ const notes = (where = '1=1', ...a) => db.prepare(`SELECT * FROM notifications W
 before(async () => {
   bootstrap(db);
   saveSettings(db, { notify: { manager_phone: '0500000009', remind_staff: true, shift_alerts: true, alert_manager: true, staff_account: true, daily_summary: true, summary_time: '21:30', alert_all: true } });
+  saveSettings(db, { payroll_start_day: 1, deduction_multiplier: 1 }); // these tests use calendar months and plain amounts
   const phones = { ali: '0500000001', basem: '0500000002', abdulmalik: '0500000006', monther: '0500000003' };
   for (const [u, p] of Object.entries(phones)) db.prepare("UPDATE users SET phone = ? WHERE username = ?").run(`966${p.slice(1)}`, u);
   server = createServer(createApp(db));

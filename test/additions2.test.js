@@ -110,13 +110,13 @@ test('exit without permission: priced like lateness, only inside working hours, 
   const ex = cases('safwan', 'unauthorized_exit');
   assert.equal(ex.length, 2);
   assert.equal(ex[0].minutes, 15);
-  assert.equal(ex[0].amount, 5);
+  assert.equal(ex[0].amount, 15, 'a riyal per 3 minutes, times 3 (the owner\'s rule)');
   assert.equal(ex[1].minutes, 20, '10 minutes before the break and 10 after it');
   // the supervisor approves with the proposed amount; the deduction is recorded
   assert.equal((await basem('PUT', `/api/cases/${ex[0].id}`, { status: 'approved' })).status, 200);
   const ded = db.prepare("SELECT * FROM deductions WHERE user_id = ? AND category = 'exit'").all(id('safwan'));
   assert.equal(ded.length, 1);
-  assert.equal(ded[0].amount, 5);
+  assert.equal(ded[0].amount, 15);
   assert.equal(notes("kind = 'deduction' AND user_id = ?", id('safwan')).length, 1);
   // a different amount, or dismiss with a reason
   assert.equal((await basem('PUT', `/api/cases/${ex[1].id}`, { status: 'dismissed', response: 'مشوار للمحل بطلب المشرف' })).status, 200);
