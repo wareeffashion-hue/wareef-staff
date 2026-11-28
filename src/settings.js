@@ -19,7 +19,7 @@ export const DEFAULTS = {
   max_exit_minutes: 30,
   hide_deductions: false,    // employees see their net salary only, without the deduction amounts
   payroll_start_day: 27,     // payroll month starts on this day of the previous month (27 = 27/11 → 26/12); 1 = calendar month
-  deduction_multiplier: 3,   // the suggested deduction (lateness, early leave, exits, absence) is this many times its value
+  deduction_multiplier: 3,   // lateness and early leave are deducted this many times their value (exits and absence are not)
   selfie_on_suspicion: true, // a punch from a new device, outside the location or network needs a selfie
   security: {
     allowed_ips: [],      // empty = any network

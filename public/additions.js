@@ -587,7 +587,7 @@ async function cases() {
       <div class="seg" role="tablist">${[['pending', 'بانتظار المراجعة'], ['done', 'تمت مراجعتها']].map(([k, l]) => `<button type="button" data-st="${k}" class="${k === status ? 'on' : ''}">${l}</button>`).join('')}</div></div></div>
     <div class="kpis"><div class="kpi ${d.counts.missing ? 'warn' : ''}"><b>${C.int(d.counts.missing)}</b><span>لم يسجّل انصراف</span></div>
       <div class="kpi ${d.counts.exits ? 'warn' : ''}"><b>${C.int(d.counts.exits)}</b><span>خروج بدون إذن</span></div></div>
-    <section class="panel"><header><h2>${status === 'pending' ? 'بانتظار قرارك' : 'آخر الحالات'}</h2><span class="muted small">عدم تسجيل الانصراف: الاعتماد يحسب الفترة غياب. الخروج بدون إذن: الاعتماد يسجّل الخصم (ريال لكل ${d.lateRate} دقائق، × ${d.multiplier || 1})</span></header>
+    <section class="panel"><header><h2>${status === 'pending' ? 'بانتظار قرارك' : 'آخر الحالات'}</h2><span class="muted small">عدم تسجيل الانصراف: الاعتماد يحسب الفترة غياب. الخروج بدون إذن: الاعتماد يسجّل الخصم (ريال لكل ${d.lateRate} دقائق)</span></header>
       ${d.cases.length ? `<div class="list">${d.cases.map((c) => `<div class="item"><div class="top"><b>${C.esc(c.name)} · ${C.esc(d.kinds[c.kind])}</b>${P(CS, c.status)}</div>
         <div class="small">${C.fmtDate(c.date)} · ${range(c)}</div>
         ${c.kind === 'unauthorized_exit' ? `<div class="small">الخصم ${c.status === 'pending' ? 'المقترح' : ''}: <b>${C.money(c.amount)} ر.س</b></div>` : ''}

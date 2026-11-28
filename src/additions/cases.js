@@ -11,7 +11,7 @@ import { audit, tx } from '../db.js';
 import { HttpError } from '../http.js';
 import { getSettings, saveSettings } from '../settings.js';
 import { at, localDate, localTime } from '../time.js';
-import { deductionMultiplier, exceptionOf, loadExceptions, periodsFor } from '../attendance.js';
+import { exceptionOf, loadExceptions, periodsFor } from '../attendance.js';
 import { assertOpen } from '../monthly.js';
 import { payMonthOf, payPeriod, payrollStartDay } from '../payperiod.js';
 import { DEDUCTION_LABELS } from '../reports.js';
@@ -30,7 +30,6 @@ export function reviewTick(db, now = Date.now()) {
   const date = localDate(now);
   const settings = getSettings(db);
   const lateRate = settings.late_minutes_per_riyal ?? 3;
-  const times = deductionMultiplier(settings.deduction_multiplier);
   if (db.prepare('SELECT 1 FROM excuses WHERE user_id IS NULL AND date = ?').get(date)) return 0;
   const exceptions = loadExceptions(db, date, date);
   const users = db.prepare("SELECT id, name, salary, periods, day_off, created_at FROM users WHERE role = 'employee' AND active = 1").all();
@@ -65,7 +64,7 @@ export function reviewTick(db, now = Date.now()) {
       else continue;
       const minutes = Math.round(uncovered([l.ts, end], periods, permits) / MIN);
       if (minutes < 1) continue;
-      const amount = round2(times * (lateRate > 0 ? minutes / lateRate : scheduled > 0 ? (u.salary / 30 / scheduled) * minutes : 0));
+      const amount = lateRate > 0 ? round2(minutes / lateRate) : round2(scheduled > 0 ? (u.salary / 30 / scheduled) * minutes : 0);
       opened += open(db, u, { date, kind: 'unauthorized_exit', ref: String(l.ts), period_name: within?.name || '', started_at: l.ts, ended_at: end, minutes, amount }, now);
     }
   }
@@ -157,7 +156,7 @@ export function listCases(db, user, { status = 'pending', userId = null } = {}) 
   const rows = db.prepare(`SELECT c.*, u.name, d.name AS decided_name FROM review_cases c JOIN users u ON u.id = c.user_id LEFT JOIN users d ON d.id = c.decided_by
                            WHERE ${where.join(' AND ')} ORDER BY c.status = 'pending' DESC, c.date DESC, c.id DESC LIMIT 300`).all(...args);
   const counts = db.prepare("SELECT SUM(kind = 'missing_out') missing, SUM(kind = 'unauthorized_exit') exits FROM review_cases WHERE status = 'pending'" + (all ? '' : ' AND user_id = ?')).get(...(all ? [] : [user.id]));
-  return { cases: rows, counts: { missing: counts.missing || 0, exits: counts.exits || 0 }, kinds: KIND, lateRate: getSettings(db).late_minutes_per_riyal ?? 3, multiplier: deductionMultiplier(getSettings(db).deduction_multiplier) };
+  return { cases: rows, counts: { missing: counts.missing || 0, exits: counts.exits || 0 }, kinds: KIND, lateRate: getSettings(db).late_minutes_per_riyal ?? 3 };
 }
 
 export function decideCase(db, user, id, body) {

@@ -45,7 +45,7 @@ export const exceptionOf = (map, userId, date) => map.get(`${userId}|${date}`) |
  * @param {number} o.maxExit         minutes a temporary exit may last before it's flagged
  * @param {number} o.salary          monthly salary, for the suggested deduction
  * @param {number} o.lateRate        minutes of lateness per riyal of fine (0 = priced by salary)
- * @param {number} o.multiplier      the suggested deduction is this many times the value of the missing time (owner: 3)
+ * @param {number} o.multiplier      lateness and early leave are deducted this many times their value (owner: 3)
  * @param {number} o.now             epoch ms
  * @param {object} o.reviews         period id → 'pending' | 'approved': a missing checkout under review, or confirmed as absence
  */
@@ -181,12 +181,13 @@ export function computeDay({ date, punches, periods, excuse = null, grace = 0, m
   if (out.some((p) => p.review === 'pending')) res.status = 'review';
 
   // Lateness has a flat fine (a riyal per few minutes); other missing time is priced from the (basic)
-  // salary. The whole is then multiplied (the owner's rule: a deduction is 3 times its value).
+  // salary. Lateness and early leave are multiplied (the owner's rule: 3 times their value); exits
+  // and absence are not.
   const perMinute = salary > 0 && scheduledMinutes > 0 ? salary / 30 / scheduledMinutes : 0;
   const live = out.filter((p) => p.state === 'not_arrived').reduce((t, p) => t + p.late, 0);
   const late = res.lateMinutes - live;
   const lateFine = lateRate > 0 ? late / lateRate : perMinute * late;
-  res.suggested = round2(deductionMultiplier(multiplier) * (lateFine + perMinute * (res.earlyMinutes + res.exitMinutes + res.absentMinutes)));
+  res.suggested = round2(deductionMultiplier(multiplier) * (lateFine + perMinute * res.earlyMinutes) + perMinute * (res.exitMinutes + res.absentMinutes));
   return res;
 }
 

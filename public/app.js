@@ -1026,7 +1026,7 @@ PAGES.attendance = async () => {
     <section class="panel"><header><h2>الملخص</h2><span class="muted small">${st.from} إلى ${st.to}</span></header>
       ${table(['الموظف', 'أيام العمل', 'حضور', 'غياب', 'غياب جزئي', 'أيام تأخير', 'دقائق التأخير', 'انصراف مبكر', 'خروج أثناء الدوام', 'إضافي', ...(mny ? ['الخصم المقترح (ر.س)'] : [])],
         d.summary.map((s) => `<tr><td><b>${esc(s.name)}</b></td><td>${s.workDays}</td><td>${s.presentDays}</td><td>${s.absentDays ? pill(s.absentDays, 'bad') : 0}</td><td>${s.partialDays}</td><td>${s.lateDays}</td><td>${mn(s.lateMinutes)}</td><td>${mn(s.earlyMinutes)}</td><td>${mn(s.exitMinutes)}</td><td>${hm(s.overtimeMinutes)}</td>${mny ? `<td>${money(s.suggested)}</td>` : ''}</tr>`))}
-      <p class="muted small" ${mny ? '' : 'hidden'}>الخصم المقترح: ${d.lateRate ? `التأخير بريال عن كل ${d.lateRate} دقائق، والانصراف` : 'التأخير والانصراف'} المبكر والخروج والغياب من الراتب الأساسي (أجر اليوم = الراتب ÷ 30، مقسوماً على دقائق دوام ذلك اليوم)، والمجموع مضروب في ${d.multiplier || 1}. لا يُخصم شيء إلا إذا اعتمدته من صفحة الرواتب أو الخصومات.</p>
+      <p class="muted small" ${mny ? '' : 'hidden'}>الخصم المقترح: ${d.lateRate ? `التأخير بريال عن كل ${d.lateRate} دقائق، والانصراف` : 'التأخير والانصراف'} المبكر والخروج والغياب من الراتب الأساسي (أجر اليوم = الراتب ÷ 30، مقسوماً على دقائق دوام ذلك اليوم)، وخصم التأخير والانصراف المبكر مضروب في ${d.multiplier || 1}. لا يُخصم شيء إلا إذا اعتمدته من صفحة الرواتب أو الخصومات.</p>
     </section>
     <section class="panel"><header><h2>التفاصيل اليومية</h2><span class="muted small">اضغط على أي صف لعرض البصمات</span></header>
       ${table(['اليوم', 'الموظف', 'الحالة', 'الحضور', 'الانصراف', 'تأخير', 'انصراف مبكر', 'خروج', 'ساعات العمل', 'إضافي', ...(mny ? ['مقترح'] : []), 'ملاحظات'],
@@ -1706,10 +1706,10 @@ PAGES.settings = async () => {
         <label class="f">فترة السماح للتأخير (دقائق)<input type="number" min="0" max="120" id="s-grace" value="${s.grace_minutes}"></label>
         <label class="f">أقصى مدة للخروج المؤقت (دقائق)<input type="number" min="1" max="600" id="s-exit" value="${s.max_exit_minutes}"></label>
         <label class="f">خصم التأخير: ريال لكل (دقائق)<input type="number" min="0" max="600" id="s-lrate" value="${s.late_minutes_per_riyal ?? 3}"></label>
-        <label class="f">مضاعفة الخصم (× كم)<input type="number" min="1" max="10" step="1" id="s-mult" value="${s.deduction_multiplier ?? 3}"></label>
+        <label class="f">مضاعفة خصم التأخير والانصراف المبكر (×)<input type="number" min="1" max="10" step="1" id="s-mult" value="${s.deduction_multiplier ?? 3}"></label>
       </div>
       <p class="muted small">التأخير ضمن فترة السماح لا يُحسب. إذا تجاوزها يُحسب التأخير كاملاً من بداية الدوام، ويُقترح خصم ريال عن كل ${s.late_minutes_per_riyal ?? 3} دقائق تأخير (ضع 0 ليُحسب من الراتب).
-        بعدها يُضرب الخصم المقترح كله (التأخير والانصراف المبكر والخروج والغياب) في ${s.deduction_multiplier ?? 3}، والغياب والخروج محسوبة من الراتب الأساسي. ضع 1 لإلغاء المضاعفة.</p>
+        خصم التأخير والانصراف المبكر يُضرب في ${s.deduction_multiplier ?? 3} (الانصراف المبكر محسوب من الراتب الأساسي). الغياب والخروج بدون مضاعفة. ضع 1 لإلغاء المضاعفة.</p>
     </section>
     <section class="panel"><header><h2>الحماية من التلاعب</h2></header>
       <label class="f">شبكات المحل المسموحة (عنوان IP لكل سطر، اتركه فارغاً للسماح بأي شبكة)<textarea id="s-ips" dir="ltr" rows="3">${esc(s.security.allowed_ips.join('\n'))}</textarea></label>
