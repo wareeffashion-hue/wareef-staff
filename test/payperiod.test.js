@@ -10,7 +10,10 @@ const { createApp } = await import('../src/server.js');
 const { saveSettings } = await import('../src/settings.js');
 const { at } = await import('../src/time.js');
 const { assertOpen, closeMonth, payrollFor, reopenMonth } = await import('../src/monthly.js');
-const { nominalPeriod, payMonthOf, payPeriod } = await import('../src/payperiod.js');
+const { nominalPeriod, payMonthOf, payPeriod, payrollStartDay } = await import('../src/payperiod.js');
+const { mkdtempSync } = await import('node:fs');
+const { tmpdir } = await import('node:os');
+const { join } = await import('node:path');
 
 let server;
 let base;
@@ -30,9 +33,23 @@ before(async () => {
 });
 after(() => server.close());
 
-test('the default stays the calendar month', () => {
+test('the default is now 27 → 26 (owner 2026-11-28); 1 still gives the calendar month', () => {
+  assert.deepEqual(payPeriod(db, '2026-12'), { from: '2026-11-27', to: '2026-12-26' });
+  assert.equal(payMonthOf(db, '2026-11-28'), '2026-12');
+  saveSettings(db, { payroll_start_day: 1 });
   assert.deepEqual(payPeriod(db, '2026-02'), { from: '2026-02-01', to: '2026-02-28' });
   assert.equal(payMonthOf(db, '2026-02-27'), '2026-02');
+});
+
+test('a start day saved earlier moves to the 27th on upgrade', () => {
+  const file = join(mkdtempSync(join(tmpdir(), 'wareef-')), 'staff.db');
+  const old = openDb(file);
+  old.prepare("INSERT INTO settings (key, value) VALUES ('payroll_start_day', '1')").run();
+  old.exec('PRAGMA user_version = 12'); // a database from before this change
+  old.close();
+  const up = openDb(file);
+  assert.equal(payrollStartDay(up), 27);
+  up.close();
 });
 
 test('start day 27: each month runs from the 27th of the month before to the 26th', () => {

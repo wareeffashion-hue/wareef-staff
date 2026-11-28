@@ -11,7 +11,7 @@ import { audit, tx } from '../db.js';
 import { HttpError } from '../http.js';
 import { getSettings, saveSettings } from '../settings.js';
 import { at, localDate, localTime } from '../time.js';
-import { exceptionOf, loadExceptions, periodsFor } from '../attendance.js';
+import { deductionMultiplier, exceptionOf, loadExceptions, periodsFor } from '../attendance.js';
 import { assertOpen } from '../monthly.js';
 import { payMonthOf, payPeriod, payrollStartDay } from '../payperiod.js';
 import { DEDUCTION_LABELS } from '../reports.js';
@@ -30,6 +30,7 @@ export function reviewTick(db, now = Date.now()) {
   const date = localDate(now);
   const settings = getSettings(db);
   const lateRate = settings.late_minutes_per_riyal ?? 3;
+  const times = deductionMultiplier(settings.deduction_multiplier);
   if (db.prepare('SELECT 1 FROM excuses WHERE user_id IS NULL AND date = ?').get(date)) return 0;
   const exceptions = loadExceptions(db, date, date);
   const users = db.prepare("SELECT id, name, salary, periods, day_off, created_at FROM users WHERE role = 'employee' AND active = 1").all();
@@ -39,18 +40,14 @@ export function reviewTick(db, now = Date.now()) {
     if (db.prepare('SELECT 1 FROM excuses WHERE user_id = ? AND date = ?').get(u.id, date)) continue;
     const periods = periodsFor(u, date, settings.schedule, false, exceptionOf(exceptions, u.id, date)).map((p) => ({ ...p, s: at(date, p.start), e: at(date, p.end) }));
     if (!periods.length) continue;
-    const punches = db.prepare('SELECT ts, type FROM punches WHERE user_id = ? AND date = ? AND voided = 0 ORDER BY ts').all(u.id, date);
+    const punches = db.prepare('SELECT ts, type, source FROM punches WHERE user_id = ? AND date = ? AND voided = 0 ORDER BY ts').all(u.id, date);
     if (!punches.length) continue;
 
     // missing checkout: still in at end + DELAY, having come in before the period ended
     for (const p of periods) {
-      const check = p.e + DELAY * MIN;
-      if (now < check) continue;
-      const upto = punches.filter((x) => x.ts <= check);
-      const last = upto[upto.length - 1];
-      if (!last || (last.type !== 'in' && last.type !== 'back')) continue;
-      if (last.ts >= p.e) continue; // came in after this period: it belongs to the next one
-      opened += open(db, u, { date, kind: 'missing_out', ref: p.id, period_name: p.name, started_at: p.e, note: `آخر بصمة ${localTime(last.ts)}` }, now);
+      if (now < p.e + DELAY * MIN) continue;
+      const last = missingCheckout(punches, p);
+      if (last) opened += open(db, u, { date, kind: 'missing_out', ref: p.id, period_name: p.name, started_at: p.e, note: `آخر بصمة ${localTime(last.ts)}` }, now);
     }
 
     // exits without permission, counted inside working periods only
@@ -68,11 +65,53 @@ export function reviewTick(db, now = Date.now()) {
       else continue;
       const minutes = Math.round(uncovered([l.ts, end], periods, permits) / MIN);
       if (minutes < 1) continue;
-      const amount = lateRate > 0 ? round2(minutes / lateRate) : round2(scheduled > 0 ? (u.salary / 30 / scheduled) * minutes : 0);
+      const amount = round2(times * (lateRate > 0 ? minutes / lateRate : scheduled > 0 ? (u.salary / 30 / scheduled) * minutes : 0));
       opened += open(db, u, { date, kind: 'unauthorized_exit', ref: String(l.ts), period_name: within?.name || '', started_at: l.ts, ended_at: end, minutes, amount }, now);
     }
   }
   return opened;
+}
+
+/**
+ * The punch that leaves a period without a checkout, or null. An arrival the manager entered by hand
+ * is the manager's word that the employee was there, so it never opens a missing-checkout case.
+ */
+function missingCheckout(punches, p) {
+  const upto = punches.filter((x) => x.ts <= p.e + DELAY * MIN);
+  const last = upto[upto.length - 1];
+  if (!last || (last.type !== 'in' && last.type !== 'back')) return null;
+  if (last.ts >= p.e) return null; // came in after this period: it belongs to the next one
+  if (last.source === 'manager' && last.type === 'in') return null;
+  return last;
+}
+
+/**
+ * After the manager adds a punch by hand, the day's missing-checkout cases that no longer hold are
+ * closed, pending or already approved as absence: the manual punch is the later, explicit decision.
+ * Without this the day kept showing «غياب بانتظار المراجعة» (or «غائب») after the manager marked
+ * the employee present.
+ */
+export function resolveCasesAfterManagerPunch(db, manager, userId, date) {
+  const open = db.prepare("SELECT * FROM review_cases WHERE user_id = ? AND date = ? AND kind = 'missing_out' AND status IN ('pending', 'approved')").all(userId, date);
+  if (!open.length) return 0;
+  const u = db.prepare('SELECT id, periods, day_off FROM users WHERE id = ?').get(userId);
+  const settings = getSettings(db);
+  const holiday = !!db.prepare('SELECT 1 FROM excuses WHERE user_id IS NULL AND date = ?').get(date);
+  const periods = periodsFor(u, date, settings.schedule, holiday, exceptionOf(loadExceptions(db, date, date), userId, date))
+    .map((p) => ({ ...p, s: at(date, p.start), e: at(date, p.end) }));
+  const punches = db.prepare('SELECT ts, type, source FROM punches WHERE user_id = ? AND date = ? AND voided = 0 ORDER BY ts').all(userId, date);
+  let closed = 0;
+  for (const c of open) {
+    const p = periods.find((x) => x.id === c.ref);
+    if (p && missingCheckout(punches, p)) continue;
+    db.prepare("UPDATE review_cases SET status = 'dismissed', decided_by = ?, decided_at = ?, response = ? WHERE id = ?")
+      .run(manager.id, Date.now(), 'صحّح المدير البصمة يدوياً', c.id);
+    audit(db, manager.id, 'case.resolve', userId, { id: c.id, was: c.status, by: 'manager_punch' });
+    logChange(db, { actor: manager, area: 'attendance', action: 'إغلاق حالة عدم تسجيل الانصراف ببصمة يدوية', target: userId,
+      ref: `${date} · ${c.period_name}`, before: c.status === 'approved' ? 'غياب' : 'غياب بانتظار المراجعة', after: 'حضور', reason: 'أضاف المدير البصمة يدوياً' });
+    closed++;
+  }
+  return closed;
 }
 
 /** Milliseconds of [a, b] inside working periods and outside approved permissions. */
@@ -118,7 +157,7 @@ export function listCases(db, user, { status = 'pending', userId = null } = {}) 
   const rows = db.prepare(`SELECT c.*, u.name, d.name AS decided_name FROM review_cases c JOIN users u ON u.id = c.user_id LEFT JOIN users d ON d.id = c.decided_by
                            WHERE ${where.join(' AND ')} ORDER BY c.status = 'pending' DESC, c.date DESC, c.id DESC LIMIT 300`).all(...args);
   const counts = db.prepare("SELECT SUM(kind = 'missing_out') missing, SUM(kind = 'unauthorized_exit') exits FROM review_cases WHERE status = 'pending'" + (all ? '' : ' AND user_id = ?')).get(...(all ? [] : [user.id]));
-  return { cases: rows, counts: { missing: counts.missing || 0, exits: counts.exits || 0 }, kinds: KIND, lateRate: getSettings(db).late_minutes_per_riyal ?? 3 };
+  return { cases: rows, counts: { missing: counts.missing || 0, exits: counts.exits || 0 }, kinds: KIND, lateRate: getSettings(db).late_minutes_per_riyal ?? 3, multiplier: deductionMultiplier(getSettings(db).deduction_multiplier) };
 }
 
 export function decideCase(db, user, id, body) {

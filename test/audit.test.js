@@ -22,6 +22,7 @@ const id = (u) => db.prepare('SELECT id FROM users WHERE username = ?').get(u).i
 before(async () => {
   bootstrap(db);
   saveSettings(db, { notify: { manager_phone: '0500000009', alert_manager: true, staff_account: true } });
+  saveSettings(db, { payroll_start_day: 1 }); // these tests use calendar months
   db.prepare("UPDATE users SET phone = '966500000001' WHERE username = 'ali'").run();
   server = createServer(createApp(db));
   await new Promise((r) => server.listen(0, r));

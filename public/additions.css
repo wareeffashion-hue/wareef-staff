@@ -93,3 +93,6 @@ details summary { cursor: pointer; color: var(--muted); }
   .cw-panel { position: fixed; inset-inline: 8px; width: auto; bottom: calc(146px + env(safe-area-inset-bottom, 0px)); height: calc(100vh - 220px); }
 }
 @media print { .cw { display: none; } }
+/* the approver's amount field next to "approve" on a recorded deduction */
+.ad-amt { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }
+.ad-amt input { width: 96px; padding: 6px 8px; border-radius: 10px; }
