@@ -42,9 +42,11 @@ export function reviewTick(db, now = Date.now()) {
     if (!periods.length) continue;
     const punches = db.prepare('SELECT ts, type, source FROM punches WHERE user_id = ? AND date = ? AND voided = 0 ORDER BY ts').all(u.id, date);
     if (!punches.length) continue;
+    // a day the manager already fixed by hand is the manager's call: no missing-checkout case on it
+    const manual = punches.some((x) => x.source === 'manager');
 
     // missing checkout: still in at end + DELAY, having come in before the period ended
-    for (const p of periods) {
+    for (const p of manual ? [] : periods) {
       if (now < p.e + DELAY * MIN) continue;
       const last = missingCheckout(punches, p);
       if (last) opened += open(db, u, { date, kind: 'missing_out', ref: p.id, period_name: p.name, started_at: p.e, note: `آخر بصمة ${localTime(last.ts)}` }, now);
@@ -72,46 +74,46 @@ export function reviewTick(db, now = Date.now()) {
   return opened;
 }
 
-/**
- * The punch that leaves a period without a checkout, or null. An arrival the manager entered by hand
- * is the manager's word that the employee was there, so it never opens a missing-checkout case.
- */
+/** The punch that leaves a period without a checkout, or null. */
 function missingCheckout(punches, p) {
   const upto = punches.filter((x) => x.ts <= p.e + DELAY * MIN);
   const last = upto[upto.length - 1];
   if (!last || (last.type !== 'in' && last.type !== 'back')) return null;
   if (last.ts >= p.e) return null; // came in after this period: it belongs to the next one
-  if (last.source === 'manager' && last.type === 'in') return null;
   return last;
 }
 
 /**
- * After the manager adds a punch by hand, the day's missing-checkout cases that no longer hold are
- * closed, pending or already approved as absence: the manual punch is the later, explicit decision.
+ * The manager adding a punch by hand means the manager has reviewed that day: its missing-checkout
+ * cases close, pending or already approved as absence, and no new one opens on it (see reviewTick).
  * Without this the day kept showing «غياب بانتظار المراجعة» (or «غائب») after the manager marked
  * the employee present.
  */
 export function resolveCasesAfterManagerPunch(db, manager, userId, date) {
   const open = db.prepare("SELECT * FROM review_cases WHERE user_id = ? AND date = ? AND kind = 'missing_out' AND status IN ('pending', 'approved')").all(userId, date);
-  if (!open.length) return 0;
-  const u = db.prepare('SELECT id, periods, day_off FROM users WHERE id = ?').get(userId);
-  const settings = getSettings(db);
-  const holiday = !!db.prepare('SELECT 1 FROM excuses WHERE user_id IS NULL AND date = ?').get(date);
-  const periods = periodsFor(u, date, settings.schedule, holiday, exceptionOf(loadExceptions(db, date, date), userId, date))
-    .map((p) => ({ ...p, s: at(date, p.start), e: at(date, p.end) }));
-  const punches = db.prepare('SELECT ts, type, source FROM punches WHERE user_id = ? AND date = ? AND voided = 0 ORDER BY ts').all(userId, date);
-  let closed = 0;
   for (const c of open) {
-    const p = periods.find((x) => x.id === c.ref);
-    if (p && missingCheckout(punches, p)) continue;
     db.prepare("UPDATE review_cases SET status = 'dismissed', decided_by = ?, decided_at = ?, response = ? WHERE id = ?")
-      .run(manager.id, Date.now(), 'صحّح المدير البصمة يدوياً', c.id);
+      .run(manager.id, Date.now(), 'حضّره المدير يدوياً', c.id);
     audit(db, manager.id, 'case.resolve', userId, { id: c.id, was: c.status, by: 'manager_punch' });
     logChange(db, { actor: manager, area: 'attendance', action: 'إغلاق حالة عدم تسجيل الانصراف ببصمة يدوية', target: userId,
       ref: `${date} · ${c.period_name}`, before: c.status === 'approved' ? 'غياب' : 'غياب بانتظار المراجعة', after: 'حضور', reason: 'أضاف المدير البصمة يدوياً' });
-    closed++;
   }
-  return closed;
+  return open.length;
+}
+
+/**
+ * Once at start-up: days the manager had already fixed by hand before this rule existed still carry
+ * their missing-checkout cases (so they showed as absence). Close them the same way.
+ */
+export function resolveManualDays(db) {
+  const owner = db.prepare("SELECT id, name FROM users WHERE role = 'admin' ORDER BY id LIMIT 1").get();
+  if (!owner) return 0;
+  const days = db.prepare(`SELECT DISTINCT c.user_id, c.date FROM review_cases c
+                           WHERE c.kind = 'missing_out' AND c.status IN ('pending', 'approved')
+                             AND EXISTS (SELECT 1 FROM punches p WHERE p.user_id = c.user_id AND p.date = c.date AND p.voided = 0 AND p.source = 'manager')`).all();
+  let n = 0;
+  for (const d of days) n += tx(db, () => resolveCasesAfterManagerPunch(db, owner, d.user_id, d.date));
+  return n;
 }
 
 /** Milliseconds of [a, b] inside working periods and outside approved permissions. */

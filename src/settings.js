@@ -18,7 +18,7 @@ export const DEFAULTS = {
   late_minutes_per_riyal: 3, // lateness fine: one riyal per this many minutes; 0 = by salary like other missing time
   max_exit_minutes: 30,
   hide_deductions: false,    // employees see their net salary only, without the deduction amounts
-  payroll_start_day: 27,     // payroll month starts on this day of the previous month (27 = 27/11 → 26/12); 1 = calendar month
+  payroll_start_day: 28,     // payroll month starts on this day of the previous month (28 = 28/11 → 27/12); 1 = calendar month
   deduction_multiplier: 3,   // lateness, early leave and exits (also without permission) are deducted this many times their value; absence is not
   selfie_on_suspicion: true, // a punch from a new device, outside the location or network needs a selfie
   security: {
