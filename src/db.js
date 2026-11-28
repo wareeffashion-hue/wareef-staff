@@ -554,6 +554,10 @@ const MIGRATIONS = [
   `
   UPDATE settings SET value = '27' WHERE key = 'payroll_start_day';
   `,
+  // v14 — the owner changed it the same day: the payroll month runs from the 28th to the 27th.
+  `
+  UPDATE settings SET value = '28' WHERE key = 'payroll_start_day';
+  `,
 ];
 
 export function openDb(path) {

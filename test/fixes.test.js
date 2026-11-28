@@ -1,5 +1,5 @@
 // Owner requests of 2026-11-28: a manual "present" must not stay absent, deductions are 3 times
-// their value, the approver may change a recorded deduction's amount, payroll month 27 → 26.
+// their value, the approver may change a recorded deduction's amount, payroll month 28 → 27.
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
@@ -86,13 +86,29 @@ test('manual checkout closes the open case, pending or already approved as absen
   assert.ok((await admin('GET', '/api/changes?area=attendance')).body.changes.some((x) => x.action === 'إغلاق حالة عدم تسجيل الانصراف ببصمة يدوية'));
 });
 
-test('a manual punch that does not fix the checkout leaves the case open', async () => {
-  selfPunch('monther', '13:00', 'in');
-  reviewTick(db, at(D, '21:31'));
+test('any manual punch on a day closes its open case and no new one opens', async () => {
+  selfPunch('monther', '07:00', 'in');
+  reviewTick(db, at(D, '12:51'));
   assert.equal(cases('monther').length, 1);
-  // fixing only the arrival time does not add the missing checkout
-  assert.equal((await admin('POST', '/api/punches', { user_id: id('monther'), date: D, time: '12:58', type: 'in', note: 'وصل قبل البصمة' })).status, 200);
-  assert.equal(cases('monther')[0].status, 'pending');
+  // the manager marks the employee present (another arrival): the day is the manager's call now
+  assert.equal((await admin('POST', '/api/punches', { user_id: id('monther'), date: D, time: '07:00', type: 'in', note: 'تحضير' })).status, 200);
+  assert.equal(cases('monther')[0].status, 'dismissed');
+  reviewTick(db, at(D, '21:31'));
+  assert.equal(cases('monther').length, 1, 'no evening case on a day the manager fixed');
+  assert.notEqual(day('monther').status, 'review');
+  assert.equal(day('monther').absentPeriods, 0);
+});
+
+test('start-up: days fixed by hand before the rule lose their absence cases', async () => {
+  const { resolveManualDays } = await import('../src/additions/cases.js');
+  const u = id('basem');
+  db.prepare("INSERT INTO punches (user_id, date, ts, type, note, source, created_by, flags, created_at) VALUES (?, ?, ?, 'in', 'تحضير', 'manager', ?, ?, ?)")
+    .run(u, D, at(D, '07:00'), id('admin'), JSON.stringify(['manager_entry']), Date.now());
+  db.prepare("INSERT INTO review_cases (user_id, date, kind, ref, period_name, status, created_at) VALUES (?, ?, 'missing_out', 'am', 'ص', 'approved', ?)").run(u, D, Date.now());
+  db.prepare("INSERT INTO review_cases (user_id, date, kind, ref, period_name, status, created_at) VALUES (?, ?, 'missing_out', 'pm', 'م', 'pending', ?)").run(u, D, Date.now());
+  assert.equal(resolveManualDays(db), 2);
+  assert.deepEqual(db.prepare("SELECT status FROM review_cases WHERE user_id = ? ORDER BY id").all(u).map((r) => r.status), ['dismissed', 'dismissed']);
+  assert.equal(resolveManualDays(db), 0, 'once');
 });
 
 test('lateness, early leave and exits are 3 times their value by default; absence is not', async () => {
@@ -130,8 +146,8 @@ test('the approver changes a recorded deduction amount before approving it', asy
   assert.equal(db.prepare('SELECT amount FROM deductions WHERE id = (SELECT deduction_id FROM deduction_requests WHERE id = ?)').get(r2.body.id).amount, 20);
 });
 
-test('payroll month 27 → 26 by default, and the employee page follows it', async () => {
-  assert.deepEqual(payPeriod(db, '2026-12'), { from: '2026-11-27', to: '2026-12-26' });
+test('payroll month 28 → 27 by default, and the employee page follows it', async () => {
+  assert.deepEqual(payPeriod(db, '2026-12'), { from: '2026-11-28', to: '2026-12-27' });
   const month = payMonthOf(db, localDate());
   const pf = await admin('GET', `/api/profile?user_id=${id('ali')}`);
   assert.equal(pf.status, 200, JSON.stringify(pf.body));

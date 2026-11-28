@@ -18,7 +18,7 @@ import {
   addDebt, addNote, decideDeduction, delegates, financeOverview, listDeductionRequests, listNotes, recordDeduction, setDelegate,
 } from './finance.js';
 import {
-  additionSettings, decideCase, deleteException, listCases, listExceptions, reviewTick, saveAdditionSettings, saveException,
+  additionSettings, decideCase, deleteException, listCases, listExceptions, resolveManualDays, reviewTick, saveAdditionSettings, saveException,
 } from './cases.js';
 import { listSelfies, selfieImage, selfieRetentionTick } from './selfie.js';
 import { PAGE_HEADERS, isFinance, people, requireFinance, requireSup } from './util.js';
@@ -27,6 +27,7 @@ import { PAGE_HEADERS, isFinance, people, requireFinance, requireSup } from './u
 export const additionJobs = [decisionFilesTick, shortageDailyTick, chatRetentionTick, reviewTick, selfieRetentionTick];
 
 export function registerAdditions(r, db) {
+  resolveManualDays(db); // days fixed by hand before the manual-punch rule: close their absence cases
   const body = async (req) => parseJson(await readBody(req));
   const auth = { auth: true };
   const page = { auth: true, page: true };
