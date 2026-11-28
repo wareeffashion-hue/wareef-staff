@@ -136,3 +136,15 @@ dialog.sheet { width: min(560px, calc(100vw - 16px)); }
 .note-box.warn { background: var(--warn-bg); }
 .greet h1 { font-size: 1.45rem; }
 @media (min-width: 861px) { .greet { display: none; } }
+.hr-acts { display: flex; gap: 12px; margin-top: 2px; }
+.money-split .tot { background: var(--ink); color: #fff; }
+.money-split .tot span { color: rgb(255 255 255 / 70%); }
+.ladder-t td, .ladder-t th { text-align: center; }
+.ladder-t td:first-child, .ladder-t th:first-child { text-align: start; }
+.cal-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 6px 18px; }
+.cal-list > div { display: flex; align-items: center; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--line); font-size: .9rem; }
+.cal-list b { width: 26px; font-variant-numeric: tabular-nums; color: var(--muted); font-weight: 500; }
+.cal-list span { flex: 1; min-width: 0; }
+.dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--muted); }
+.dot.pay { background: var(--warn); } .dot.hol { background: var(--good); } .dot.lv { background: var(--info); } .dot.doc { background: var(--bad); } .dot.ev { background: #7b55f0; }
+.roster select { min-width: 96px; }

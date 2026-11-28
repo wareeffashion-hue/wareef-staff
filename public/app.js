@@ -1,6 +1,7 @@
 // Wareef staff app: one file, no build step. Hash routes, server-rendered data via JSON API.
 import { startInk } from './ink.js';
 import { mountAdditions, addNav, askReason, withSelfie } from './additions.js';
+import { mountHr, hrNav } from './hr.js';
 
 // ------------------------------------------------------------------ helpers
 const $ = (s, el = document) => el.querySelector(s);
@@ -322,7 +323,7 @@ function forgotPassword(username = '') {
   });
 }
 
-const navItems = () => addNav(baseNavItems());
+const navItems = () => hrNav(addNav(baseNavItems()));
 function baseNavItems() {
   if (ME.role === 'admin') {
     return [
@@ -484,6 +485,8 @@ function render(html) {
   if (!main) { const off = document.createElement('div'); off.innerHTML = html; return off; } // signed out meanwhile
   const head = $('.mobile-head').outerHTML;
   main.innerHTML = head + SUBNAV + html;
+  const onTab = SUBNAV && $('.subnav a.on', main);
+  if (onTab) onTab.parentElement.scrollLeft = onTab.offsetLeft - (onTab.parentElement.clientWidth - onTab.offsetWidth) / 2;
   main.classList.remove('leaving');
   $('.shell')?.classList.remove('loading');
   if (ENTER) {
@@ -2143,6 +2146,10 @@ PAGES.scan = async () => {
 startInk();
 mountAdditions({
   $, $$, esc, api, act, toast, modal, render, refresh, PAGES, pill, statusPill, table, opt, icon, ICONS, fmtDate, fmtT, localIso, today, int, money, mn, formData, DED,
+  me: () => ME,
+});
+mountHr({
+  $, $$, esc, api, act, toast, modal, render, refresh, PAGES, pill, table, opt, icon, ICONS, fmtDate, today, int, money, mn, formData,
   me: () => ME,
 });
 boot();
