@@ -31,6 +31,7 @@ import { currentExit, endExit, exitTick, requestExit, startExit } from './exits.
 import { SCAN_KINDS, SCAN_METRIC, addScan, removeScan, scanCounts, scanList } from './scans.js';
 import { addExchange, exchangeTick, listExchanges, receiveManually, removeExchange, updateExchange } from './exchanges.js';
 import { registerAdditions, additionJobs } from './additions/index.js';
+import { registerHr, hrJobs } from './hr/index.js';
 import { logChange } from './additions/changelog.js';
 import { deductionNotice } from './additions/alerts.js';
 import { parseSelfie, saveSelfie, suspicionAlert } from './additions/selfie.js';
@@ -682,10 +683,10 @@ export function createApp(db) {
     tx(db, () => {
       for (let d = from; d <= to; d = addDays(d, 1)) {
         db.prepare(`DELETE FROM excuses WHERE date = ? AND ${userId === null ? 'user_id IS NULL' : 'user_id = ?'}`).run(d, ...(userId === null ? [] : [userId]));
-        db.prepare('INSERT INTO excuses (user_id, date, kind, note, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(userId, d, kind, text(b.note, 300), user.id, Date.now());
+        db.prepare('INSERT INTO excuses (user_id, date, kind, note, created_by, created_at, unpaid) VALUES (?, ?, ?, ?, ?, ?, ?)').run(userId, d, kind, text(b.note, 300), user.id, Date.now(), kind === 'leave' && b.unpaid && user.role === 'admin' ? 1 : 0);
       }
       audit(db, user.id, 'excuse.add', userId, { kind, from, to, note: text(b.note, 300) });
-      logChange(db, { actor: user, area: 'attendance', action: kind === 'holiday' ? 'إضافة عطلة رسمية' : 'إضافة إجازة أو عذر', target: userId, ref: from === to ? from : `${from} ← ${to}`, before: '—', after: EXCUSE_LABEL[kind], reason: b.note });
+      logChange(db, { actor: user, area: 'attendance', action: kind === 'holiday' ? 'إضافة عطلة رسمية' : 'إضافة إجازة أو عذر', target: userId, ref: from === to ? from : `${from} ← ${to}`, before: '—', after: `${EXCUSE_LABEL[kind]}${kind === 'leave' && b.unpaid && user.role === 'admin' ? ' (بدون راتب)' : ''}`, reason: b.note });
     });
     return { ok: true };
   }, { auth: true });
@@ -1049,6 +1050,7 @@ export function createApp(db) {
   }, { auth: true, page: true });
 
   registerAdditions(r, db);
+  registerHr(r, db);
   r.get('/health', () => ({ ok: true, time: localTime(Date.now()) }));
 
   return async function handle(req, res) {
@@ -1127,7 +1129,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   if (boot) {
     console.log(`حساب المدير: ${boot.username}${boot.password ? ` / كلمة المرور المؤقتة: ${boot.password}` : ''}`);
   }
-  startNotifier(db, [monthlyTick, exitTick, exchangeTick, ...additionJobs]);
+  startNotifier(db, [monthlyTick, exitTick, exchangeTick, ...additionJobs, ...hrJobs]);
   waOnMessage((phone, text) => handleIncoming(db, phone, text));
   waAutoStart();
   const backup = () => dailyBackup(db).catch((e) => console.error('backup failed', e));

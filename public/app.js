@@ -1095,8 +1095,8 @@ PAGES.attendance = async () => {
         <label class="f" id="ex-user-l">الموظف<select name="user_id" id="ex-user">${staffOptions(staff, '', 'اختر الموظف')}</select></label>
         <label class="f">من<input type="date" name="from" id="ex-from" value="${today()}" required></label>
         <label class="f">إلى<input type="date" name="to" id="ex-to" value="${today()}" required></label>
-      </div><div class="row"><label class="f">ملاحظة<input name="note" id="ex-note"></label><button class="btn" type="submit" style="flex:0 0 auto">حفظ</button></div></form>
-      ${table(['التاريخ', 'الموظف', 'النوع', 'ملاحظة', ''], ex.excuses.map((e) => `<tr><td>${fmtDate(e.date)}</td><td>${esc(e.user_name || 'الجميع')}</td><td>${EXC[e.kind]}</td><td class="wrap">${esc(e.note)}</td><td><button class="link bad" data-ex="${e.id}">حذف</button></td></tr>`), { empty: 'لا توجد إجازات أو أعذار مسجّلة' })}
+      </div><div class="row"><label class="f">ملاحظة<input name="note" id="ex-note"></label>${ME.role === 'admin' ? '<label class="check" style="flex:0 0 auto"><input type="checkbox" name="unpaid"> إجازة بدون راتب (تنخصم من المسيّر)</label>' : ''}<button class="btn" type="submit" style="flex:0 0 auto">حفظ</button></div></form>
+      ${table(['التاريخ', 'الموظف', 'النوع', 'ملاحظة', ''], ex.excuses.map((e) => `<tr><td>${fmtDate(e.date)}</td><td>${esc(e.user_name || 'الجميع')}</td><td>${EXC[e.kind]}${e.unpaid ? ` ${pill('بدون راتب', 'warn')}` : ''}</td><td class="wrap">${esc(e.note)}</td><td><button class="link bad" data-ex="${e.id}">حذف</button></td></tr>`), { empty: 'لا توجد إجازات أو أعذار مسجّلة' })}
     </section>`);
   $('#flt', pg).onchange = (e) => { sessionStorage.setItem('att', JSON.stringify(formData(e.currentTarget))); refresh(); };
   $$('tr[data-u]', pg).forEach((tr) => { tr.onclick = () => dayDetail(+tr.dataset.u, tr.dataset.n, tr.dataset.d).catch((e) => toast(e.message, true)); });
@@ -1114,7 +1114,8 @@ PAGES.payroll = async () => {
   const picked = sessionStorage.getItem('pay-month');
   const d = await api(`/api/payroll${picked ? `?month=${picked}` : ''}`);
   const month = d.month;
-  const sum = (k) => d.rows.reduce((t, r) => t + r[k], 0);
+  const sum = (k) => d.rows.reduce((t, r) => t + (r[k] || 0), 0);
+  const hrCols = d.rows.some((r) => r.overtimePay || r.unpaidLeave);
   const pg = render(`
     <div class="topline"><h1>مسيّر الرواتب</h1><div class="tools"><input type="month" id="pm" value="${month}" aria-label="الشهر">
       <a class="btn ghost" href="/api/export/payroll?month=${month}">${icon('down')}تصدير Excel</a>
@@ -1127,12 +1128,12 @@ PAGES.payroll = async () => {
       <p class="muted small">فترة مسيّر ${esc(month)}: من <b>${esc(d.period.from)}</b> إلى <b>${esc(d.period.to)}</b>. يوم بداية الشهر يتغيّر من «الإعدادات ← إعدادات الإضافات».</p>
     </section>
     <section class="panel">
-      ${table(['الموظف', 'الراتب', 'حضور', 'غياب', 'أيام تأخير', 'دقائق التأخير', 'خروج', 'الخصم المقترح', 'الخصومات المعتمدة', 'أقساط السلف', 'الصافي', 'متبقي السلف', ''],
+      ${table(['الموظف', 'الراتب', 'حضور', 'غياب', 'أيام تأخير', 'دقائق التأخير', 'خروج', 'الخصم المقترح', 'الخصومات المعتمدة', 'أقساط السلف', ...(hrCols ? ['إضافي', 'بدون راتب'] : []), 'الصافي', 'متبقي السلف', ''],
         d.rows.map((r) => `<tr><td><b>${esc(r.name)}</b></td><td>${money(r.salary)}</td><td>${r.presentDays}/${r.workDays}</td><td>${r.absentDays ? pill(r.absentDays, 'bad') : 0}</td><td>${r.lateDays}</td><td>${mn(r.lateMinutes)}</td><td>${mn(r.exitMinutes + r.earlyMinutes)}</td>
-          <td>${money(r.suggested)}</td><td>${money(r.deductions)}</td><td>${money(r.repayments)}</td><td><b>${money(r.net)}</b></td><td>${money(r.debtBalance)}</td>
+          <td>${money(r.suggested)}</td><td>${money(r.deductions)}</td><td>${money(r.repayments)}</td>${hrCols ? `<td>${r.overtimePay ? `+${money(r.overtimePay)}` : '—'}</td><td>${r.unpaidLeave ? `−${money(r.unpaidLeave)}` : '—'}</td>` : ''}<td><b>${money(r.net)}</b></td><td>${money(r.debtBalance)}</td>
           <td class="nowrap">${d.closed ? '' : `<button class="btn sm ghost" data-ded="${r.userId}" data-amt="${Math.max(0, Math.round((r.suggested - r.deductions) * 100) / 100)}">خصم</button> `}<a class="link" href="/payslip?month=${month}&user_id=${r.userId}" target="_blank" rel="noopener">القسيمة</a></td></tr>`),
-        { foot: ['الإجمالي', money(sum('salary')), '', '', '', '', '', money(sum('suggested')), money(sum('deductions')), money(sum('repayments')), money(sum('net')), money(sum('debtBalance')), ''] })}
-      <p class="muted small">الصافي = الراتب − الخصومات المعتمدة − أقساط السلف المخصومة من الراتب. الخصم المقترح للاسترشاد فقط ولا يدخل في الصافي حتى تعتمده. ${!d.rows.some((r) => r.salary) ? '<b>أدخل رواتب الموظفين من صفحة الموظفين ليظهر الخصم المقترح.</b>' : ''}</p>
+        { foot: ['الإجمالي', money(sum('salary')), '', '', '', '', '', money(sum('suggested')), money(sum('deductions')), money(sum('repayments')), ...(hrCols ? [money(sum('overtimePay')), money(sum('unpaidLeave'))] : []), money(sum('net')), money(sum('debtBalance')), ''] })}
+      <p class="muted small">الصافي = الراتب − الخصومات المعتمدة − أقساط السلف المخصومة من الراتب${hrCols ? ' + العمل الإضافي المعتمد − أيام الإجازة بدون راتب' : ''}. الخصم المقترح للاسترشاد فقط ولا يدخل في الصافي حتى تعتمده. ${!d.rows.some((r) => r.salary) ? '<b>أدخل رواتب الموظفين من صفحة الموظفين ليظهر الخصم المقترح.</b>' : ''}</p>
     </section>`);
   $('#pm', pg).onchange = (e) => { sessionStorage.setItem('pay-month', e.target.value || thisMonth()); refresh(); };
   $$('[data-ded]', pg).forEach((b) => { b.onclick = () => deductionModal(+b.dataset.ded, b.dataset.amt); });
